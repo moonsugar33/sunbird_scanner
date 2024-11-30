@@ -27,7 +27,8 @@ gh repo clone Sneethan/sunbird_scanner
 ```
 Create a file called ``.env`` and populate it with the following format of credentials, replacing URLHERE and KEYHERE with your credentails from the Supabase API dashboard for your prject:
 
-```SUPABASE_URL=URLHERE
+```
+SUPABASE_URL=URLHERE
 SUPABASE_ANON_KEY=KEYHERE
 ```
 
