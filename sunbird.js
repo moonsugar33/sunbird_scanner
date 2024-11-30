@@ -66,11 +66,11 @@ async function scrapeGoFundMe(row) {
 
     // Add URL validation check
     if (!row.link.includes('gofundme.com')) {
-      console.log(`\nSkipping [ID: ${row.id}]: Not a GoFundMe URL (${row.link})`);
+      console.log(`\nSkipping #${row.id}: Not a GoFundMe URL (${row.link})`);
       return;
     }
 
-    console.log(`\nProcessing [ID: ${row.id}]:`, row.link);
+    console.log(`\nProcessing #${row.id}`, row.link);
     browser = await puppeteer.launch({
       headless: true,
       args: [
@@ -236,18 +236,28 @@ async function processAllCampaigns() {
 
     // Parse command line arguments
     const args = process.argv.slice(2);
-    const startIndex = args.indexOf('--start') !== -1 ? 
-      parseInt(args[args.indexOf('--start') + 1]) : 0;
-    const endIndex = args.indexOf('--end') !== -1 ? 
-      parseInt(args[args.indexOf('--end') + 1]) : campaigns.length;
+    let startIndex, endIndex, totalToProcess;
+    
+    if (args.indexOf('--start') !== -1) {
+      // Range was specified
+      startIndex = parseInt(args[args.indexOf('--start') + 1]);
+      endIndex = parseInt(args[args.indexOf('--end') + 1]);
+    } else {
+      // No range specified - process all items
+      startIndex = 0;
+      totalToProcess = campaigns.length;
+      endIndex = startIndex + totalToProcess;
+    }
 
     // Filter campaigns based on range
     const campaignsToProcess = campaigns.slice(startIndex, endIndex);
-    console.log(`Processing campaigns from #${startIndex + 1} to #${endIndex}\n`);
+    totalToProcess = campaignsToProcess.length;
+    
+    console.log(`Processing campaigns from #${startIndex + 1} to #${endIndex} (${totalToProcess} campaigns)\n`);
 
     for (let i = 0; i < campaignsToProcess.length; i++) {
       const campaign = campaignsToProcess[i];
-      console.log(`Processing campaign ${i + startIndex + 1} of ${endIndex}`);
+      console.log(`Processing campaign ${i + 1} of ${totalToProcess}`);
       await scrapeGoFundMe(campaign);
       
       const delay = 2000;
