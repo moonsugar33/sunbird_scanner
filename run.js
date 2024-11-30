@@ -73,10 +73,20 @@ async function main() {
         const args = ['node', script];
         
         if (answers.useRange) {
-            const startIndex = parseInt(answers.startRange) - 1;
-            const endIndex = parseInt(answers.endRange);
+            // Get the raw user inputs (1-based)
+            const userStart = parseInt(answers.startRange);
+            const userEnd = parseInt(answers.endRange);
+            
+            // Calculate total items to process
+            const totalItems = userEnd - userStart + 1;
+            
+            // Convert start to 0-based for array indexing
+            const startIndex = userStart - 1;
+            // End index is start plus total items
+            const endIndex = startIndex + totalItems;
+        
             args.push('--start', startIndex.toString(), '--end', endIndex.toString());
-        }
+        }        
         
         const child = spawn('node', [script, ...args], {
             stdio: 'inherit'
