@@ -28,8 +28,8 @@ const questions = [
         name: 'script',
         message: 'Which script would you like to run?',
         choices: [
-            { name: '1. GazaVetters Index', value: 'index' },
-            { name: '2. Sunbirds Index', value: 'sunbird' }
+            { name: '1. GazaVetters index', value: 'index' },
+            { name: "2. soft-sunbird's index", value: 'sunbird' }
         ]
     },
     {

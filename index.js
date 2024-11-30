@@ -64,6 +64,12 @@ async function scrapeGoFundMe(row) {
       throw new Error('Invalid URL provided');
     }
 
+    // Add URL validation check
+    if (!row.link.includes('gofundme.com')) {
+      console.log(`\nSkipping [ID: ${row.id}]: Not a GoFundMe URL (${row.link})`);
+      return;
+    }
+
     console.log(`\nProcessing [ID: ${row.id}]:`, row.link);
     browser = await puppeteer.launch({
       headless: true,
