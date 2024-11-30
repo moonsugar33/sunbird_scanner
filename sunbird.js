@@ -66,11 +66,11 @@ async function scrapeGoFundMe(row) {
 
     // Add URL validation check
     if (!row.link.includes('gofundme.com')) {
-      console.log(`\nSkipping #${row.id}: Not a GoFundMe URL (${row.link})`);
+      console.log(`\nSkipping [ID: ${row.id}]: Not a GoFundMe URL (${row.link})`);
       return;
     }
 
-    console.log(`\nProcessing #${row.id}`, row.link);
+    console.log(`\nProcessing [ID: ${row.id}]:`, row.link);
     browser = await puppeteer.launch({
       headless: true,
       args: [
@@ -171,7 +171,7 @@ async function scrapeGoFundMe(row) {
       // Parse raised amount
       const parseRaisedAmount = (text) => {
         const match = text?.match(
-          /([$£¥₹₽₪₱₩R$]|[Kk]r\.?|kr|NOK|SEK|DKK|USD|EUR|GBP|JPY|INR|RUB|ILS|PHP|KRW|BRL)[\s]?([\d,.]+)/
+          /([€$£¥₹₽₪₱₩R$]|[Kk]r\.?|kr|NOK|SEK|DKK|USD|EUR|GBP|JPY|INR|RUB|ILS|PHP|KRW|BRL|AUD|CAD|NZD|SGD|MXN|CZK|HUF|THB|MYR|PHP|ZAR|AED|NPR|BHD|QAR|KWD|JOD|DZD|MAD|TND|CLP|COP|PEN|PAB|UYU|VND|RSD|RON|HRK|BGN|ISK|NOK|SEK|DKK|NOK|XOF|XAF|XPF)[\s]?([\d,.]+)/i
         );
         
         if (!match) return {
@@ -194,6 +194,7 @@ async function scrapeGoFundMe(row) {
       
       const targetData = parseTargetAmount(goalText);
       const raisedData = parseRaisedAmount(raisedText);
+      
       return {
         title: document.querySelector('h1.p-campaign-title')?.textContent.trim(),
         goalAmount: targetData.raw,
@@ -212,11 +213,14 @@ async function scrapeGoFundMe(row) {
       data.title
     );
 
+    console.log(data.raisedAmount);
     console.log('Status:', updated ? '✅ Success' : '❌ Failed');
 
+    return true;
   } catch (error) {
     console.error('Error processing:', row.link);
     console.error('Error details:', error.message);
+    return false;
   } finally {
     if (browser) {
       await browser.close();
@@ -232,7 +236,7 @@ async function processAllCampaigns() {
       return;
     }
     
-    console.log(`Found ${campaigns.length} campaigns in table\n`);
+    console.log(`Found ${campaigns.length} campaigns to process\n`);
 
     // Parse command line arguments
     const args = process.argv.slice(2);
@@ -242,6 +246,7 @@ async function processAllCampaigns() {
       // Range was specified
       startIndex = parseInt(args[args.indexOf('--start') + 1]);
       endIndex = parseInt(args[args.indexOf('--end') + 1]);
+      totalToProcess = endIndex - startIndex + 1;  // Calculate total for range (inclusive)
     } else {
       // No range specified - process all items
       startIndex = 0;
@@ -251,15 +256,41 @@ async function processAllCampaigns() {
 
     // Filter campaigns based on range
     const campaignsToProcess = campaigns.slice(startIndex, endIndex);
-    totalToProcess = campaignsToProcess.length;
     
+    console.log(`Processing campaigns from #${startIndex + 1} to #${endIndex} (${totalToProcess} campaigns)\n`);
+
+    // Initialize counters for success and failures
+    let successCount = 0;
+    let notFoundCount = 0;
+    let failedCount = 0;
+
     for (let i = 0; i < campaignsToProcess.length; i++) {
       const campaign = campaignsToProcess[i];
-      await scrapeGoFundMe(campaign);
+      console.log(`Processing campaign ${i + 1} of ${totalToProcess}`);
+      
+      const result = await scrapeGoFundMe(campaign);
+      
+      // Check the result and update counters
+      if (result) {
+        successCount++;
+      } else {
+        if (campaign.link.includes('Not found')) {
+          notFoundCount++;
+        } else {
+          failedCount++;
+        }
+      }
       
       const delay = 2000;
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
+
+    // Print summary of results
+    console.log(`\nSummary of Results:`);
+    console.log(`Successful campaigns: ${successCount}`);
+    console.log(`Not Found campaigns: ${notFoundCount}`);
+    console.log(`Failed campaigns: ${failedCount}`);
+
   } catch (error) {
     console.error('Error processing campaigns:', error.message);
   }
