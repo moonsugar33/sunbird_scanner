@@ -12,10 +12,10 @@ Sunbird Scanner is a custom built tool to scrape GoFundMe campaigns using [Puppe
 
 ## Features
 
-- Uses a loader script to support multiples tables
+- Uses a loader script to support multiple tables
 - Load links direct from table, using Supabase API
 - Performant and fast
-- Cross platform
+- Cross-platform
 
 
 ## Installation
@@ -25,7 +25,7 @@ Clone this project with the following command:
 ```bash
 gh repo clone Sneethan/sunbird_scanner
 ```
-Create a file called ``.env`` and populate it with the following format of credentials, replacing URLHERE and KEYHERE with your credentails from the Supabase API dashboard for your prject:
+Create a file called ``.env`` and populate it with the following format of credentials, replacing URLHERE and KEYHERE with your credentials from the Supabase API dashboard for your project:
 
 ```
 SUPABASE_URL=URLHERE
@@ -38,7 +38,8 @@ and ``index.js`` or other JS files if applicable with your table and column name
 
  - [Script made by Sneethan](https://sneethan.xyz)
  - [Databases made by Supabase](https://supabase.com/)
+ - [Moral support by soft-sunbird](https://soft-sunbird.tumblr.com/) 
 
 ## Disclaimers
 
-This code may break at any time if GoFundMe update their site, and may have bugs and instablities. If you find bugs and know how to fix them, pull requests are very much appreciated.
+This code may break at any time if GoFundMe updates their site, and may have bugs and instablities. If you find bugs and know how to fix them, pull requests are very much appreciated.
