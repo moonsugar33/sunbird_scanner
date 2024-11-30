@@ -64,7 +64,7 @@ async function scrapeGoFundMe(row) {
       throw new Error('Invalid URL provided');
     }
 
-    console.log('\nProcessing:', row.link);
+    console.log(`\nProcessing [ID: ${row.id}]:`, row.link);
     browser = await puppeteer.launch({
       headless: true,
       args: [
@@ -165,7 +165,7 @@ async function scrapeGoFundMe(row) {
       // Parse raised amount
       const parseRaisedAmount = (text) => {
         const match = text?.match(
-          /([€$£¥₹₽₪₱₩R$]|[Kk]r\.?|kr|NOK|SEK|DKK|USD|EUR|GBP|JPY|INR|RUB|ILS|PHP|KRW|BRL)[\s]?([\d,.]+)/
+          /([$£¥₹₽₪₱₩R$]|[Kk]r\.?|kr|NOK|SEK|DKK|USD|EUR|GBP|JPY|INR|RUB|ILS|PHP|KRW|BRL)[\s]?([\d,.]+)/
         );
         
         if (!match) return {
@@ -237,14 +237,13 @@ async function processAllCampaigns() {
 
     // Filter campaigns based on range
     const campaignsToProcess = campaigns.slice(startIndex, endIndex);
-    console.log(`Processing campaigns from index ${startIndex} to ${endIndex-1}\n`);
+    console.log(`Processing campaigns from #${startIndex + 1} to #${endIndex}\n`);
 
     for (let i = 0; i < campaignsToProcess.length; i++) {
       const campaign = campaignsToProcess[i];
-      console.log(`Processing campaign ${i + 1} of ${campaignsToProcess.length}`);
+      console.log(`Processing campaign ${i + startIndex + 1} of ${endIndex}`);
       await scrapeGoFundMe(campaign);
       
-      // Randomize delay between requests (between 2-4 seconds)
       const delay = 2000;
       await new Promise((resolve) => setTimeout(resolve, delay));
     }

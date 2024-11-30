@@ -41,17 +41,24 @@ const questions = [
     {
         type: 'input',
         name: 'startRange',
-        message: 'Enter start index:',
-        default: '0',
+        message: 'Enter start index (first item is 1):',
+        default: '1',
         when: (answers) => answers.useRange,
-        validate: (value) => !isNaN(value) || 'Please enter a valid number'
+        validate: (value) => {
+            const num = parseInt(value);
+            return (!isNaN(num) && num > 0) || 'Please enter a valid number greater than 0';
+        }
     },
     {
         type: 'input',
         name: 'endRange',
         message: 'Enter end index:',
         when: (answers) => answers.useRange,
-        validate: (value) => !isNaN(value) || 'Please enter a valid number'
+        validate: (value, answers) => {
+            const num = parseInt(value);
+            const start = parseInt(answers.startRange);
+            return (!isNaN(num) && num >= start) || 'Please enter a valid number greater than or equal to start index';
+        }
     }
 ];
 
@@ -59,21 +66,20 @@ async function main() {
     displayLogo();
     
     try {
-        // Dynamically import inquirer
         const inquirer = await import('inquirer');
         const answers = await inquirer.default.prompt(questions);
         
-        // Construct the command and arguments
         const script = answers.script === 'index' ? 'index.js' : 'Sunbird.js';
         const args = ['node', script];
         
         if (answers.useRange) {
-            args.push('--start', answers.startRange, '--end', answers.endRange);
+            const startIndex = parseInt(answers.startRange) - 1;
+            const endIndex = parseInt(answers.endRange);
+            args.push('--start', startIndex.toString(), '--end', endIndex.toString());
         }
         
-        // Use spawn instead of exec for better output handling
         const child = spawn('node', [script, ...args], {
-            stdio: 'inherit' // This will pipe all output directly to the parent process
+            stdio: 'inherit'
         });
 
         child.on('error', (error) => {
