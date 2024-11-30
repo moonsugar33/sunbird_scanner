@@ -13,7 +13,7 @@ Sunbird Scanner is a custom built tool to scrape GoFundMe campaigns using [Puppe
 ## Features
 
 - Uses a loader script to support multiple tables
-- Load links direct from table, using Supabase API
+- Loads links directly from tables, using Supabase API
 - Performant and fast
 - Cross-platform
 
@@ -32,7 +32,7 @@ SUPABASE_URL=URLHERE
 SUPABASE_ANON_KEY=KEYHERE
 ```
 
-and ``index.js`` or other JS files if applicable with your table and column names. Then install dependancies with ``npm i`` and run ``node run.js`` to run the script!
+and ``index.js`` or other JS files if applicable with your table and column names. Then install dependencies with ``npm i`` and run ``node run.js`` to run the script!
     
 ## Acknowledgements
 
