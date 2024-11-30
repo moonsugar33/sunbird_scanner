@@ -28,7 +28,8 @@ gh repo clone Sneethan/sunbird_scanner
 Create a file called ``.env`` and populate it with the following format of credentials, replacing URLHERE and KEYHERE with your credentails from the Supabase API dashboard for your prject:
 
 ```SUPABASE_URL=URLHERE
-SUPABASE_ANON_KEY=KEYHERE``
+SUPABASE_ANON_KEY=KEYHERE
+```
 
 and ``index.js`` or other JS files if applicable with your table and column names. Then install dependancies with ``npm i`` and run ``node run.js`` to run the script!
     
