@@ -232,7 +232,7 @@ async function processAllCampaigns() {
       return;
     }
     
-    console.log(`Found ${campaigns.length} campaigns to process\n`);
+    console.log(`Found ${campaigns.length} campaigns in table\n`);
 
     // Parse command line arguments
     const args = process.argv.slice(2);
@@ -253,11 +253,8 @@ async function processAllCampaigns() {
     const campaignsToProcess = campaigns.slice(startIndex, endIndex);
     totalToProcess = campaignsToProcess.length;
     
-    console.log(`Processing campaigns from #${startIndex + 1} to #${endIndex} (${totalToProcess} campaigns)\n`);
-
     for (let i = 0; i < campaignsToProcess.length; i++) {
       const campaign = campaignsToProcess[i];
-      console.log(`Processing campaign ${i + 1} of ${totalToProcess}`);
       await scrapeGoFundMe(campaign);
       
       const delay = 2000;
