@@ -3,6 +3,12 @@ import { spawn } from 'child_process';
 import figlet from 'figlet';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import fs from 'fs/promises';
+import { existsSync } from 'fs';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 // Get current file's directory (needed for ES modules)
 const __filename = fileURLToPath(import.meta.url);
@@ -20,6 +26,22 @@ function displayLogo() {
     );
     console.log('\n');
 }
+
+// Environment setup questions
+const envQuestions = [
+    {
+        type: 'input',
+        name: 'SUPABASE_URL',
+        message: 'Enter your Supabase URL (found in your project settings):',
+        validate: input => input.trim().length > 0 || 'This field is required'
+    },
+    {
+        type: 'input',
+        name: 'SUPABASE_ANON_KEY',
+        message: 'Enter your Supabase Anon Key (found in your project settings):',
+        validate: input => input.trim().length > 0 || 'This field is required'
+    }
+];
 
 // Script selection questions
 const questions = [
@@ -62,12 +84,55 @@ const questions = [
     }
 ];
 
+async function checkAndInstallDependencies() {
+    try {
+        console.log('Checking and installing dependencies...');
+        await execAsync('npm install');
+        console.log('Dependencies installed successfully!\n');
+    } catch (error) {
+        console.error('Error installing dependencies:', error.message);
+        process.exit(1);
+    }
+}
+
+async function checkAndCreateEnvFile() {
+    const envPath = '.env';
+    
+    try {
+        // Check if .env exists
+        if (!existsSync(envPath)) {
+            console.log('No .env file found. Let\'s set it up!\n');
+            console.log('You\'ll need your Supabase project credentials for this step.');
+            console.log('You can find these in your Supabase project settings under "API".\n');
+            
+            const answers = await inquirer.prompt(envQuestions);
+            
+            // Create .env content
+            const envContent = Object.entries(answers)
+                .map(([key, value]) => `${key}=${value}`)
+                .join('\n');
+            
+            // Write .env file
+            await fs.writeFile(envPath, envContent);
+            console.log('\n.env file created successfully!\n');
+        }
+    } catch (error) {
+        console.error('Error setting up .env file:', error.message);
+        process.exit(1);
+    }
+}
+
 async function main() {
     displayLogo();
     
     try {
-        const inquirer = await import('inquirer');
-        const answers = await inquirer.default.prompt(questions);
+        // Check and install dependencies first
+        await checkAndInstallDependencies();
+        
+        // Check and create .env file if needed
+        await checkAndCreateEnvFile();
+        
+        const answers = await inquirer.prompt(questions);
         
         const script = answers.script === 'index' ? 'index.js' : 'Sunbird.js';
         const args = [];
