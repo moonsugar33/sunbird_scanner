@@ -101,7 +101,7 @@ const rateLimiter = (() => {
 async function fetchCampaignUrls() {
   try {
     const { data, error } = await supabase
-      .from('sunird')
+      .from('sunbird')
       .select('id, link')
       .order('id', { ascending: true });
 
@@ -116,7 +116,7 @@ async function fetchCampaignUrls() {
 async function updateCampaignData(id, target, raised, name, currency) {
   try {
     const { data, error } = await supabase
-      .from('sunird')
+      .from('sunbird')
       .update({
         target: parseInt(target) || null,
         raised: parseInt(raised) || null,
@@ -548,27 +548,31 @@ async function processAllCampaigns() {
 
     const args = process.argv.slice(2);
     let startIndex, endIndex, totalToProcess;
+    let campaignsToProcess;
 
     if (args.indexOf('--start') !== -1) {
+      // Keep startIndex as the actual number input (no subtraction)
       startIndex = parseInt(args[args.indexOf('--start') + 1]);
       endIndex = parseInt(args[args.indexOf('--end') + 1]);
-      totalToProcess = endIndex - startIndex;
+      totalToProcess = endIndex - startIndex + 1; // Add 1 to include both start and end numbers
+      
+      // Only subtract 1 when using as array index
+      const sliceStart = startIndex - 1;
+      campaignsToProcess = campaigns.slice(sliceStart, endIndex);
     } else {
-      startIndex = 0;
+      startIndex = 1; // Start from 1 for consistency
       endIndex = campaigns.length;
       totalToProcess = campaigns.length;
+      campaignsToProcess = campaigns;
     }
 
-    const campaignsToProcess = campaigns.slice(startIndex, endIndex);
+    console.log(`Found ${campaigns.length} total campaigns`);
+    console.log(`Processing campaigns from #${startIndex} to #${endIndex}\n`);
 
     let successCount = 0;
     let notFoundCount = 0;
     let failedCount = 0;
     let skippedCount = 0;
-
-    // Initial status display
-    console.log(`Found ${campaigns.length} total campaigns`);
-    console.log(`Processing campaigns from #${startIndex + 1} to #${endIndex}\n`);
 
     for (let i = 0; i < campaignsToProcess.length; i++) {
       if (isShuttingDown) {
@@ -577,9 +581,15 @@ async function processAllCampaigns() {
       }
 
       const campaign = campaignsToProcess[i];
-      const percentage = Math.round((i / totalToProcess) * 100);
+      const percentage = Math.round(((i + 1) / totalToProcess) * 100);
       
-      console.log(`\n--- Campaign ${i + 1}/${totalToProcess} (${percentage}%) ---`);
+      // When no range specified, show current/total, otherwise show range progress
+      if (args.indexOf('--start') !== -1) {
+        console.log(`\n--- Campaign ${startIndex + i}/${endIndex} (${percentage}% of range) ---`);
+      } else {
+        console.log(`\n--- Campaign ${i + 1}/${totalToProcess} (${percentage}%) ---`);
+      }
+      
       console.log(`URL: ${campaign.link} | ID: ${campaign.id}`);
 
       try {
