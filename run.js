@@ -70,21 +70,18 @@ async function main() {
         const answers = await inquirer.default.prompt(questions);
         
         const script = answers.script === 'index' ? 'index.js' : 'Sunbird.js';
-        const args = ['node', script];
+        const args = [];
         
         if (answers.useRange) {
-            // Get the raw user inputs (1-based)
-            const userStart = parseInt(answers.startRange);
-            const userEnd = parseInt(answers.endRange);
+            // Convert user's 1-based input to 0-based index for start
+            const startIndex = parseInt(answers.startRange) - 1;
+            // Keep endIndex as-is since slice is exclusive
+            const endIndex = parseInt(answers.endRange);
             
-            // Calculate total items to process
-            const totalItems = userEnd - userStart + 1;
+            if (isNaN(startIndex) || isNaN(endIndex)) {
+                throw new Error('Invalid range values provided');
+            }
             
-            // Convert start to 0-based for array indexing
-            const startIndex = userStart - 1;
-            // End index is start plus total items
-            const endIndex = startIndex + totalItems;
-        
             args.push('--start', startIndex.toString(), '--end', endIndex.toString());
         }        
         

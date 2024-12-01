@@ -4,6 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import * as dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import cliProgress from 'cli-progress';
 
 // Configure dotenv
 dotenv.config();
@@ -18,6 +19,35 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
+// Define currency mapping at the top level
+const CURRENCY_MAPPING = {
+  // Symbols to codes
+  '€': 'EUR',
+  '$': 'USD',
+  '£': 'GBP',
+  '¥': 'JPY',
+  '₹': 'INR',
+  '₽': 'RUB',
+  '₪': 'ILS',
+  '₱': 'PHP',
+  '₩': 'KRW',
+  'R$': 'BRL',
+  
+  // Nordic currencies (typically appearing after amount)
+  'kr': 'SEK',
+  'Kr': 'SEK',
+  'KR': 'SEK',
+  'SEK': 'SEK',
+  'NOK': 'NOK',
+  'DKK': 'DKK',
+  
+  // Other currency codes
+  'EUR': 'EUR',
+  'USD': 'USD',
+  'GBP': 'GBP'
+};
+
+// Helper functions
 async function fetchCampaignUrls() {
   try {
     const { data, error } = await supabase
@@ -33,14 +63,15 @@ async function fetchCampaignUrls() {
   }
 }
 
-async function updateCampaignData(id, target, raised, name) {
+async function updateCampaignData(id, target, raised, name, currency) {
   try {
     const { data, error } = await supabase
       .from('gv-links')
       .update({
         target: parseInt(target) || null,
         raised: parseInt(raised) || null,
-        name: name || null,
+        title: name || null,
+        currency: currency || null
       })
       .eq('id', id)
       .select();
@@ -57,6 +88,131 @@ async function updateCampaignData(id, target, raised, name) {
   }
 }
 
+// Amount parsing functions
+const parseRaisedAmount = (text) => {
+  if (!text) return {
+    currency: 'Not found',
+    amount: 'Not found',
+    raw: 'Not found'
+  };
+
+  // First, try to match the GoFundMe specific HTML format
+  const gfmMatch = text.match(
+    /<span[^>]*>([\d,. ]+)<\/span>\s*<span[^>]*>([A-Z]{3}|[Kk][Rr]?)\s*<\/span>/i
+  );
+
+  if (gfmMatch) {
+    const amount = gfmMatch[1].replace(/[,\s]/g, '');
+    const rawCurrency = gfmMatch[2].trim().toUpperCase();
+    return {
+      currency: CURRENCY_MAPPING[rawCurrency] || rawCurrency,
+      amount: amount,
+      raw: gfmMatch[0]
+    };
+  }
+
+  // Then try to match post-amount currencies
+  const postAmountMatch = text.match(
+    /([\d,. ]+)\s*([A-Z]{3}|[Kk][Rr]?)\b/i
+  );
+
+  if (postAmountMatch) {
+    const amount = postAmountMatch[1].replace(/[,\s]/g, '');
+    const rawCurrency = postAmountMatch[2].trim().toUpperCase();
+    return {
+      currency: CURRENCY_MAPPING[rawCurrency] || rawCurrency,
+      amount: amount,
+      raw: postAmountMatch[0]
+    };
+  }
+
+  // Finally, try to match pre-amount currencies
+  const preAmountMatch = text.match(
+    /([€$£¥₹₽₪₱₩R$]|[Kk]r\.?|EUR|USD|GBP)\s*([\d,.]+)/i
+  );
+
+  if (preAmountMatch) {
+    const amount = preAmountMatch[2].replace(/[,\s]/g, '');
+    const rawCurrency = preAmountMatch[1].trim().toUpperCase();
+    return {
+      currency: CURRENCY_MAPPING[rawCurrency] || rawCurrency,
+      amount: amount,
+      raw: preAmountMatch[0]
+    };
+  }
+
+  return {
+    currency: 'Not found',
+    amount: 'Not found',
+    raw: 'Not found'
+  };
+};
+
+const parseTargetAmount = (text) => {
+  if (!text) return {
+    currency: 'Not found',
+    amount: 'Not found',
+    raw: 'Not found'
+  };
+
+  // First, try to match the GoFundMe specific HTML format
+  const gfmMatch = text.match(
+    /<span[^>]*>([\d,. ]+)<\/span>\s*<span[^>]*>([A-Z]{3}|[Kk][Rr]?)\s*<\/span>/i
+  );
+
+  if (gfmMatch) {
+    const amount = gfmMatch[1].replace(/[,\s]/g, '');
+    const rawCurrency = gfmMatch[2].trim().toUpperCase();
+    return {
+      currency: CURRENCY_MAPPING[rawCurrency] || rawCurrency,
+      amount: amount,
+      raw: gfmMatch[0]
+    };
+  }
+
+  // Then try to match post-amount currencies
+  const postAmountMatch = text.match(
+    /([\d,. ]+)\s*([A-Z]{3}|[Kk][Rr]?)\b/i
+  );
+
+  if (postAmountMatch) {
+    const amount = postAmountMatch[1].replace(/[,\s]/g, '');
+    const rawCurrency = postAmountMatch[2].trim().toUpperCase();
+    return {
+      currency: CURRENCY_MAPPING[rawCurrency] || rawCurrency,
+      amount: amount,
+      raw: postAmountMatch[0]
+    };
+  }
+
+  // Finally, try to match pre-amount currencies
+  const preAmountMatch = text.match(
+    /([€$£¥₹₽₪₱₩R$]|[Kk]r\.?|EUR|USD|GBP)\s*([\d,.]+)/i
+  );
+
+  if (preAmountMatch) {
+    const amount = preAmountMatch[2].replace(/[,\s]/g, '');
+    const rawCurrency = preAmountMatch[1].trim().toUpperCase();
+    return {
+      currency: CURRENCY_MAPPING[rawCurrency] || rawCurrency,
+      amount: amount,
+      raw: preAmountMatch[0]
+    };
+  }
+
+  return {
+    currency: 'Not found',
+    amount: 'Not found',
+    raw: 'Not found'
+  };
+};
+
+// Add this helper function for console clearing
+function clearLastLines(count) {
+  process.stdout.write(`\x1b[${count}A\x1b[0J`);
+}
+
+// Main scraping function
 async function scrapeGoFundMe(row) {
   let browser;
   try {
@@ -64,36 +220,31 @@ async function scrapeGoFundMe(row) {
       throw new Error('Invalid URL provided');
     }
 
-    // Add URL validation check
     if (!row.link.includes('gofundme.com')) {
-      console.log(`\nSkipping [ID: ${row.id}]: Not a GoFundMe URL (${row.link})`);
-      return;
+      return false;
     }
 
-    console.log(`\nProcessing [ID: ${row.id}]:`, row.link);
     browser = await puppeteer.launch({
       headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage', // Prevents memory issues in Docker/Linux
-        '--disable-gpu', // Reduces memory usage
-        '--disable-extensions', // We don't need extensions
-        '--disable-audio', // Disable audio - we don't need it
-        '--disable-notifications', // Disable notifications
-        '--disable-background-timer-throttling', // Improve timer precision
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-extensions',
+        '--disable-audio',
+        '--disable-notifications',
+        '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
-        '--disable-ipc-flooding-protection' // Can improve performance
+        '--disable-ipc-flooding-protection'
       ]
     });
 
     const page = await browser.newPage();
     
-    // Block unnecessary resources
     await page.setRequestInterception(true);
     page.on('request', (request) => {
       const resourceType = request.resourceType();
-      // Only allow necessary resource types
       if (['document', 'script', 'xhr', 'fetch'].includes(resourceType)) {
         request.continue();
       } else {
@@ -101,19 +252,14 @@ async function scrapeGoFundMe(row) {
       }
     });
 
-    // Optimize memory usage
-    await page.setViewport({ width: 800, height: 600 }); // Smaller viewport
-    
-    // Cache disabled to ensure fresh data
+    await page.setViewport({ width: 800, height: 600 });
     await page.setCacheEnabled(false);
 
-    // Add timeout to page load with faster initial check
     await page.goto(row.link, {
-      waitUntil: 'domcontentloaded', // Faster than 'networkidle0'
-      timeout: 20000 // Reduced timeout to 20 seconds
+      waitUntil: 'domcontentloaded',
+      timeout: 20000
     });
 
-    // Wait for specific elements with reduced timeout
     const selectors = [
       'h1.p-campaign-title',
       '.progress-meter_progressBarHeading__Nxc77',
@@ -129,97 +275,42 @@ async function scrapeGoFundMe(row) {
     }
 
     const data = await page.evaluate(() => {
-      // Parse target/goal amount
-      const parseTargetAmount = (text) => {
-        const beforeTarget = text?.split('target')[0];
-        const match = beforeTarget?.match(
-          /([€$£¥₹₽₪₱₩R$]|[Kk]r\.?|kr|NOK|SEK|DKK|USD|EUR|GBP|JPY|INR|RUB|ILS|PHP|KRW|BRL)[\s]?([\d,.]+[kKmMbB]?)/
-        );
-
-        if (!match) return {
-          currency: 'Not found',
-          amount: 'Not found',
-          raw: 'Not found'
-        };
-
-        const currency = match[1];
-        let amount = match[2];
-
-        // Normalize the amount
-        const normalizeAmount = (amountStr) => {
-          let normalized = amountStr.replace(/[,\s]/g, '');
-          if (normalized.toLowerCase().endsWith('k')) {
-            const number = parseFloat(normalized.slice(0, -1));
-            normalized = (number * 1000).toString();
-          } else if (normalized.toLowerCase().endsWith('m')) {
-            const number = parseFloat(normalized.slice(0, -1));
-            normalized = (number * 1000000).toString();
-          } else if (normalized.toLowerCase().endsWith('b')) {
-            const number = parseFloat(normalized.slice(0, -1));
-            normalized = (number * 1000000000).toString();
-          }
-          return normalized;
-        };
-
-        return {
-          currency,
-          amount: normalizeAmount(amount),
-          raw: match[0]
-        };
-      };
-
-      // Parse raised amount
-      const parseRaisedAmount = (text) => {
-        const match = text?.match(
-          /([€$£¥₹₽₪₱₩R$]|[Kk]r\.?|kr|NOK|SEK|DKK|USD|EUR|GBP|JPY|INR|RUB|ILS|PHP|KRW|BRL|AUD|CAD|NZD|SGD|MXN|CZK|HUF|THB|MYR|PHP|ZAR|AED|NPR|BHD|QAR|KWD|JOD|DZD|MAD|TND|CLP|COP|PEN|PAB|UYU|VND|RSD|RON|HRK|BGN|ISK|NOK|SEK|DKK|NOK|XOF|XAF|XPF)[\s]?([\d,.]+)/i
-        );
-        
-        if (!match) return {
-          currency: 'Not found',
-          amount: 'Not found',
-          raw: 'Not found'
-        };
-
-        return {
-          currency: match[1],
-          amount: match[2].replace(/,/g, ''),
-          raw: match[0]
-        };
-      };
-
-
-
       const goalText = document.querySelector('.progress-meter_circleGoalDonations__5gSh1')?.textContent.trim();
-      const raisedText = document.querySelector('.progress-meter_progressBarHeading__Nxc77')?.textContent.trim();
-      
-      const targetData = parseTargetAmount(goalText);
-      const raisedData = parseRaisedAmount(raisedText);
+      const raisedText = document.querySelector('.progress-meter_progressBarHeading__Nxc77')?.innerHTML.trim();
       
       return {
         title: document.querySelector('h1.p-campaign-title')?.textContent.trim(),
-        goalAmount: targetData.raw,
-        goalAmountNormalized: targetData.amount,
-        goalCurrency: targetData.currency,
-        raisedAmount: raisedData.raw,
-        raisedAmountNormalized: raisedData.amount,
-        raisedCurrency: raisedData.currency,
+        goalText,
+        raisedText
       };
     });
 
+    const raisedData = parseRaisedAmount(data.raisedText);
+    const targetData = parseTargetAmount(data.goalText);
+
+    const processedData = {
+      title: data.title,
+      goalAmount: targetData.raw,
+      goalAmountNormalized: targetData.amount,
+      goalCurrency: targetData.currency,
+      raisedAmount: raisedData.raw,
+      raisedAmountNormalized: raisedData.amount,
+      raisedCurrency: raisedData.currency,
+    };
+
     const updated = await updateCampaignData(
       row.id,
-      data.goalAmountNormalized,
-      data.raisedAmountNormalized,
-      data.title
+      processedData.goalAmountNormalized,
+      processedData.raisedAmountNormalized,
+      processedData.title,
+      processedData.raisedCurrency
     );
-
-    console.log(data.raisedAmount);
-    console.log('Status:', updated ? '✅ Success' : '❌ Failed');
 
     return true;
   } catch (error) {
-    console.error('Error processing:', row.link);
-    console.error('Error details:', error.message);
+    // Clear and update error status
+    clearLastLines(1);
+    console.log(`Last Error: ${error.message}`);
     return false;
   } finally {
     if (browser) {
@@ -228,6 +319,7 @@ async function scrapeGoFundMe(row) {
   }
 }
 
+// Main process function
 async function processAllCampaigns() {
   try {
     const campaigns = await fetchCampaignUrls();
@@ -235,68 +327,113 @@ async function processAllCampaigns() {
       console.log('No campaigns found to process');
       return;
     }
-    
-    console.log(`Found ${campaigns.length} campaigns to process\n`);
 
-    // Parse command line arguments
     const args = process.argv.slice(2);
     let startIndex, endIndex, totalToProcess;
-    
+
     if (args.indexOf('--start') !== -1) {
-      // Range was specified
       startIndex = parseInt(args[args.indexOf('--start') + 1]);
       endIndex = parseInt(args[args.indexOf('--end') + 1]);
-      totalToProcess = endIndex - startIndex + 1;  // Calculate total for range (inclusive)
+      totalToProcess = endIndex - startIndex;
     } else {
-      // No range specified - process all items
       startIndex = 0;
+      endIndex = campaigns.length;
       totalToProcess = campaigns.length;
-      endIndex = startIndex + totalToProcess;
     }
 
-    // Filter campaigns based on range
     const campaignsToProcess = campaigns.slice(startIndex, endIndex);
-    
-    console.log(`Processing campaigns from #${startIndex + 1} to #${endIndex} (${totalToProcess} campaigns)\n`);
 
-    // Initialize counters for success and failures
     let successCount = 0;
     let notFoundCount = 0;
     let failedCount = 0;
+    let skippedCount = 0;
+
+    // Initial render of status
+    console.log(`Found ${campaigns.length} total campaigns`);
+    console.log(`Processing campaigns from #${startIndex + 1} to #${endIndex}`);
+    console.log('');
+    console.log('Progress |░░░░░░░░░░| 0%');  // Initial progress bar
+    console.log('');  // URL
+    console.log('');  // Status
+    console.log('');  // Error
+    console.log('');  // Empty line
 
     for (let i = 0; i < campaignsToProcess.length; i++) {
       const campaign = campaignsToProcess[i];
-      console.log(`Processing campaign ${i + 1} of ${totalToProcess}`);
-      
+      const percentage = Math.round((i / totalToProcess) * 100);
+      const progressBarWidth = Math.round((i / totalToProcess) * 10);
+      const progressBar = '|' + '█'.repeat(progressBarWidth) + '░'.repeat(10 - progressBarWidth) + '|';
+
+      // Clear previous status lines (always clear all 8 lines)
+      clearLastLines(8);
+
+      // Rewrite everything
+      console.log(`Found ${campaigns.length} total campaigns`);
+      console.log(`Processing campaigns from #${startIndex + 1} to #${endIndex}`);
+      console.log('');
+      console.log(`Progress ${progressBar} ${percentage}%`);
+      console.log(`URL: ${campaign.link}`);
+
+      // Check if it's a GoFundMe URL
+      if (!campaign.link.includes('gofundme.com')) {
+        skippedCount++;
+        console.log(`Status: ⚠️ Skipped - Not a GoFundMe URL`);
+        console.log(`Last Error: None`);
+        console.log('');
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
+
+      console.log(`Status: Processing...`);
+      console.log(`Last Error: None`);
+      console.log('');
+
       const result = await scrapeGoFundMe(campaign);
+
+      // Clear and update status (all 8 lines again)
+      clearLastLines(8);
+
+      // Rewrite everything again
+      console.log(`Found ${campaigns.length} total campaigns`);
+      console.log(`Processing campaigns from #${startIndex + 1} to #${endIndex}`);
+      console.log('');
+      console.log(`Progress ${progressBar} ${percentage}%`);
+      console.log(`URL: ${campaign.link}`);
       
-      // Check the result and update counters
       if (result) {
         successCount++;
+        console.log(`Status: ✅ Success`);
       } else {
         if (campaign.link.includes('Not found')) {
           notFoundCount++;
+          console.log(`Status: ⚠️ Not Found`);
         } else {
           failedCount++;
+          console.log(`Status: ❌ Failed`);
         }
       }
-      
-      const delay = 2000;
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      console.log(`Last Error: None`);
+      console.log('');
+
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
-    // Print summary of results
+    // Clear final status
+    clearLastLines(8);
+
+    // Show final summary
     console.log(`\nSummary of Results:`);
     console.log(`Successful campaigns: ${successCount}`);
     console.log(`Not Found campaigns: ${notFoundCount}`);
     console.log(`Failed campaigns: ${failedCount}`);
+    console.log(`Skipped (non-GoFundMe) URLs: ${skippedCount}`);
 
   } catch (error) {
     console.error('Error processing campaigns:', error.message);
   }
 }
 
-// Add better error handling to the main execution
+// Execute the main process
 processAllCampaigns()
   .then(() => {
     console.log('Scraping complete');
@@ -306,4 +443,3 @@ processAllCampaigns()
     console.error('Fatal error:', err);
     process.exit(1);
   });
-
