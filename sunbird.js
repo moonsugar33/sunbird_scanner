@@ -46,11 +46,7 @@ const CURRENCY_MAPPING = {
   // Other currency codes
   'EUR': 'EUR',
   'USD': 'USD',
-  'GBP': 'GBP',
-  
-  // Add K suffix handling
-  'K': null,  // K should be ignored as it's not a currency
-  'k': null,
+  'GBP': 'GBP'
 };
 
 // Add currency symbol mapping near the top with other constants
@@ -212,25 +208,33 @@ const parseTargetAmount = (text) => {
   // Remove extra text like "target·75 donations"
   text = text.split('·')[0].trim();
 
-  // Handle K suffix for thousands
-  const kSuffixMatch = text.match(/([€$£¥₹₽₪₱₩R$]|[Kk]r\.?|EUR|USD|GBP)?\s*([\d,. ]+)K/i);
+  // Helper function to normalize amount with K suffix
+  const normalizeAmount = (amount, hasK = false) => {
+    amount = amount.replace(/[,\s]/g, '');
+    const numAmount = parseFloat(amount);
+    return hasK ? (numAmount * 1000).toString() : amount;
+  };
+
+  // Handle K suffix for thousands (now checking for k/K at the end of number)
+  const kSuffixMatch = text.match(/([€$£¥₹₽₪₱₩R$]|[Kk]r\.?|EUR|USD|GBP)?\s*([\d,. ]+)[kK]\b/i);
   if (kSuffixMatch) {
-    const amount = parseFloat(kSuffixMatch[2].replace(/[,\s]/g, '')) * 1000;
-    const rawCurrency = kSuffixMatch[1]?.trim().toUpperCase() || 'EUR';  // Default to EUR if no currency specified
+    const amount = normalizeAmount(kSuffixMatch[2], true);
+    const rawCurrency = kSuffixMatch[1]?.trim().toUpperCase() || 'EUR';
     return {
       currency: CURRENCY_MAPPING[rawCurrency] || rawCurrency,
-      amount: amount.toString(),
+      amount: amount,
       raw: text
     };
   }
 
   // First, try to match the GoFundMe specific HTML format
   const gfmMatch = text.match(
-    /<span[^>]*>([\d,. ]+)<\/span>\s*<span[^>]*>([A-Z]{3}|[Kk][Rr]?)\s*<\/span>/i
+    /<span[^>]*>([\d,. ]+)[kK]?\s*<\/span>\s*<span[^>]*>([A-Z]{3}|[Kk][Rr]?)\s*<\/span>/i
   );
 
   if (gfmMatch) {
-    const amount = gfmMatch[1].replace(/[,\s]/g, '');
+    const hasK = gfmMatch[1].toLowerCase().endsWith('k');
+    const amount = normalizeAmount(gfmMatch[1].replace(/[kK]$/, ''), hasK);
     const rawCurrency = gfmMatch[2].trim().toUpperCase();
     return {
       currency: CURRENCY_MAPPING[rawCurrency] || rawCurrency,
@@ -241,11 +245,12 @@ const parseTargetAmount = (text) => {
 
   // Then try to match post-amount currencies
   const postAmountMatch = text.match(
-    /([\d,. ]+)\s*([A-Z]{3}|[Kk][Rr]?)\b/i
+    /([\d,. ]+)[kK]?\s*([A-Z]{3}|[Kk][Rr]?)\b/i
   );
 
   if (postAmountMatch) {
-    const amount = postAmountMatch[1].replace(/[,\s]/g, '');
+    const hasK = postAmountMatch[1].toLowerCase().endsWith('k');
+    const amount = normalizeAmount(postAmountMatch[1].replace(/[kK]$/, ''), hasK);
     const rawCurrency = postAmountMatch[2].trim().toUpperCase();
     return {
       currency: CURRENCY_MAPPING[rawCurrency] || rawCurrency,
@@ -256,11 +261,12 @@ const parseTargetAmount = (text) => {
 
   // Finally, try to match pre-amount currencies
   const preAmountMatch = text.match(
-    /([€$£¥₹₽₪₱₩R$]|[Kk]r\.?|EUR|USD|GBP)\s*([\d,.]+)/i
+    /([€$£¥₹₽₪₱₩R$]|[Kk]r\.?|EUR|USD|GBP)\s*([\d,.]+)[kK]?\b/i
   );
 
   if (preAmountMatch) {
-    const amount = preAmountMatch[2].replace(/[,\s]/g, '');
+    const hasK = preAmountMatch[2].toLowerCase().endsWith('k');
+    const amount = normalizeAmount(preAmountMatch[2].replace(/[kK]$/, ''), hasK);
     const rawCurrency = preAmountMatch[1].trim().toUpperCase();
     return {
       currency: CURRENCY_MAPPING[rawCurrency] || rawCurrency,
@@ -477,10 +483,10 @@ async function scrapeGoFundMe(row) {
     console.log(' Extracted Data:');
     console.log(`   Title: ${processedData.title || 'Not found'}`);
     console.log(`   Goal: ${processedData.goalAmountNormalized ? 
-      `${CURRENCY_SYMBOLS[processedData.goalCurrency] || processedData.goalCurrency || ''}${processedData.goalAmountNormalized}` : 
+      `${CURRENCY_SYMBOLS[processedData.goalCurrency] || processedData.goalCurrency || ''}${processedData.goalAmountNormalized} (Raw: ${processedData.goalAmount})` : 
       'Not found'}`);
     console.log(`   Raised: ${processedData.raisedAmountNormalized ? 
-      `${CURRENCY_SYMBOLS[processedData.raisedCurrency] || processedData.raisedCurrency || ''}${processedData.raisedAmountNormalized}` : 
+      `${CURRENCY_SYMBOLS[processedData.raisedCurrency] || processedData.raisedCurrency || ''}${processedData.raisedAmountNormalized} (Raw: ${processedData.raisedAmount})` : 
       'Not found'}`);
 
     // Attempt database update
