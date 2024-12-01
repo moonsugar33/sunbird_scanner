@@ -580,7 +580,7 @@ async function processAllCampaigns() {
       const percentage = Math.round((i / totalToProcess) * 100);
       
       console.log(`\n--- Campaign ${i + 1}/${totalToProcess} (${percentage}%) ---`);
-      console.log(`URL: ${campaign.link}`);
+      console.log(`URL: ${campaign.link} | ID: ${campaign.id}`);
 
       try {
         if (!campaign.link) {
