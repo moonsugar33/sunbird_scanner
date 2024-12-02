@@ -528,22 +528,29 @@ async function scrapeCampaign(row) {
       }
 
       // Convert cents to whole currency units by dividing by 100
+      const title = chuffedData?.campaign?.title || 'Not found';
       const totalSupporters = chuffedData?.campaign?.donations?.totalCount || 'Not found';
       const totalRaised = chuffedData?.campaign?.collected?.amount 
         ? Math.floor(parseInt(chuffedData.campaign.collected.amount) / 100)
         : 'Not found';
-      const currency = chuffedData?.campaign?.target?.currencyNode?.symbol || 'Not found';
+      const currencySymbol = chuffedData?.campaign?.target?.currencyNode?.symbol || 'Not found';
+      // Convert currency symbol to three-letter code
+      const currency = CURRENCY_MAPPING[currencySymbol] || currencySymbol;
       const targetAmount = chuffedData?.campaign?.target?.amount 
         ? Math.floor(parseInt(chuffedData.campaign.target.amount) / 100)
         : 'Not found';
 
-      console.log(`✅ Chuffed Data Extracted: Raised ${currency}${totalRaised}, Donations: ${totalSupporters}, Target: ${currency}${targetAmount}`);
+      console.log(' Extracted Data:');
+      console.log(`   Title: ${title}`);
+      console.log(`   Goal: ${targetAmount} ${currency}`);
+      console.log(`   Raised: ${totalRaised} ${currency}`);
+      console.log(`   Donations: ${totalSupporters}`);
 
       const updated = await updateCampaignData(
         row.id,
         targetAmount === 'Not found' ? null : targetAmount,
         totalRaised === 'Not found' ? null : totalRaised,
-        chuffedData?.campaign?.title || null,
+        title,
         currency === 'Not found' ? null : currency
       );
 
