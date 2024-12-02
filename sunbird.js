@@ -1,4 +1,3 @@
-// Import dependencies using ES Module syntax
 import puppeteer from 'puppeteer';
 import { createClient } from '@supabase/supabase-js';
 import * as dotenv from 'dotenv';
@@ -78,6 +77,27 @@ const ERROR_STRATEGIES = {
   'TimeoutError': { retries: 3, delay: 5000 },
   'NetworkError': { retries: 5, delay: 3000 },
   'default': { retries: 2, delay: 2000 }
+};
+
+// Add near other constants
+const SITE_TYPES = {
+  GOFUNDME: 'gofundme',
+  CHUFFED: 'chuffed'
+};
+
+const SELECTORS = {
+  [SITE_TYPES.GOFUNDME]: {
+    title: 'h1.p-campaign-title',
+    raised: '.progress-meter_progressBarHeading__Nxc77',
+    goal: '.progress-meter_circleGoalDonations__5gSh1',
+    supporters: '.progress-meter_circleGoalDonations__5gSh1'
+  },
+  [SITE_TYPES.CHUFFED]: {
+    title: 'h1.campaign-container__title',
+    raised: '[data-testid="progress-meter-raised"]',
+    goal: '[data-testid="progress-meter-target"]',
+    supporters: '.campaign-container__share-values h3'
+  }
 };
 
 // Replace the existing delay in scrapeGoFundMe
@@ -339,8 +359,88 @@ const metrics = {
   }
 };
 
+// Add this helper function
+function detectSiteType(url) {
+  if (!url) return null;
+  
+  if (url.includes('gofundme.com')) return SITE_TYPES.GOFUNDME;
+  if (url.includes('chuffed.org')) return SITE_TYPES.CHUFFED;
+  
+  return null;
+}
+
+// Add Chuffed-specific amount parsing function
+const parseChuffedAmount = (text) => {
+  if (!text) return {
+    currency: 'Not found',
+    amount: 'Not found',
+    raw: 'Not found'
+  };
+
+  // Remove any "Raised of" prefix
+  text = text.replace('Raised of', '').trim();
+  
+  // If we have HTML, extract the text from inside the span
+  if (text.includes('<span>')) {
+    const spanMatch = text.match(/<span>(.*?)<\/span>/);
+    if (spanMatch) {
+      text = spanMatch[1].replace(/&nbsp;/g, ' ').trim();
+    }
+  }
+  
+  // Match amount and currency (Chuffed format: "190 €" or "50 000 €")
+  const match = text.match(/([\d\s,.]+)\s*([A-Z€£$]{1,3})/i);
+  
+  if (match) {
+    // Remove spaces and normalize amount
+    const amount = match[1].replace(/[\s,]/g, '');
+    const rawCurrency = match[2].trim();
+    
+    return {
+      currency: CURRENCY_MAPPING[rawCurrency] || rawCurrency,
+      amount: amount,
+      raw: text
+    };
+  }
+
+  return {
+    currency: 'Not found',
+    amount: 'Not found',
+    raw: 'Not found'
+  };
+};
+
+// Add a delay helper specifically for animations
+const waitForAnimation = async (page, selector, timeout = 5000) => {
+  const startTime = Date.now();
+  let lastValue = null;
+  
+  // Keep checking until the value stabilizes
+  while (Date.now() - startTime < timeout) {
+    const currentValue = await page.$eval(selector, el => el.textContent);
+    if (currentValue === lastValue) {
+      return true; // Value has stabilized
+    }
+    lastValue = currentValue;
+    await delay(100); // Check every 100ms
+  }
+  return false; // Timeout reached
+};
+
+// Add a helper function to parse GoFundMe supporters
+const parseGoFundMeSupporters = (text) => {
+  if (!text) return null;
+  
+  // Match the number before "donations"
+  const match = text.match(/(\d+)\s*donations/);
+  if (match) {
+    return match[1];
+  }
+  return null;
+};
+
 // Main scraping function
-async function scrapeGoFundMe(row) {
+async function scrapeCampaign(row) {
   await rateLimiter();
   
   let browser;
@@ -349,7 +449,8 @@ async function scrapeGoFundMe(row) {
       throw new Error('Invalid URL provided');
     }
 
-    if (!row.link.includes('gofundme.com')) {
+    const siteType = detectSiteType(row.link);
+    if (!siteType) {
       return false;
     }
 
@@ -388,25 +489,24 @@ async function scrapeGoFundMe(row) {
     try {
       await retry(async () => {
         await page.goto(row.link, {
-          waitUntil: 'domcontentloaded',
-          timeout: 20000
+          waitUntil: 'networkidle0', // Ensure dynamic content loads
+          timeout: 30000 // Increased timeout for Chuffed
         });
       });
     } catch (error) {
       throw new Error(`Failed to load page after retries: ${error.message}`);
     }
 
-    const selectors = {
-      title: 'h1.p-campaign-title',
-      raised: '.progress-meter_progressBarHeading__Nxc77',
-      goal: '.progress-meter_circleGoalDonations__5gSh1'
-    };
+    const selectors = SELECTORS[siteType];
 
     // Check each element individually with detailed error reporting
     const elementPresence = {};
     for (const [key, selector] of Object.entries(selectors)) {
       try {
-        await page.waitForSelector(selector, { timeout: 8000 });
+        await page.waitForSelector(selector, { 
+          timeout: 10000,
+          visible: true // Ensure element is visible
+        });
         elementPresence[key] = true;
       } catch (error) {
         elementPresence[key] = false;
@@ -416,10 +516,10 @@ async function scrapeGoFundMe(row) {
 
     // If no elements were found, throw error
     if (!Object.values(elementPresence).some(present => present)) {
-      throw new Error('No required elements found on page - possible layout change or invalid page');
+      throw new Error('No required elements found on page');
     }
 
-    const data = await page.evaluate((selectors) => {
+    const data = await page.evaluate((selectors, siteType, SITE_TYPES) => {
       const getData = (selector) => {
         const element = document.querySelector(selector);
         return {
@@ -432,18 +532,32 @@ async function scrapeGoFundMe(row) {
       const title = getData(selectors.title);
       const raised = getData(selectors.raised);
       const goal = getData(selectors.goal);
+      const supporters = getData(selectors.supporters);
 
       return {
         title: title.text,
         goalText: goal.text,
-        raisedText: raised.html,
+        raisedText: raised.html || raised.text,
+        supportersCount: siteType === SITE_TYPES.GOFUNDME ? 
+          supporters.text : // For GoFundMe, get full text to parse later
+          supporters?.text?.match(/\d+/)?.[0] || null, // For Chuffed, get just the number
         elementStatus: {
           title: title.exists,
           raised: raised.exists,
-          goal: goal.exists
+          goal: goal.exists,
+          supporters: supporters?.exists
         }
       };
-    }, selectors);
+    }, selectors, siteType, SITE_TYPES);
+
+    // Parse amounts based on site type
+    const raisedData = siteType === SITE_TYPES.CHUFFED ? 
+      parseChuffedAmount(data.raisedText) : 
+      parseRaisedAmount(data.raisedText);
+    
+    const targetData = siteType === SITE_TYPES.CHUFFED ? 
+      parseChuffedAmount(data.goalText) : 
+      parseTargetAmount(data.goalText);
 
     // Validate scraped data
     if (!data.elementStatus.title && !data.elementStatus.raised && !data.elementStatus.goal) {
@@ -455,14 +569,6 @@ async function scrapeGoFundMe(row) {
     if (!data.raisedText) console.log('⚠️ Warning: Raised amount is missing');
     if (!data.goalText) console.log('⚠️ Warning: Goal amount is missing');
 
-    const raisedData = parseRaisedAmount(data.raisedText);
-    const targetData = parseTargetAmount(data.goalText);
-
-    // Validate parsed amounts
-    if (raisedData.amount === 'Not found' && targetData.amount === 'Not found') {
-      throw new Error('Failed to parse both raised and target amounts');
-    }
-
     const processedData = {
       title: data.title || null,
       goalAmount: targetData.raw,
@@ -471,6 +577,9 @@ async function scrapeGoFundMe(row) {
       raisedAmount: raisedData.raw,
       raisedAmountNormalized: raisedData.amount === 'Not found' ? null : raisedData.amount,
       raisedCurrency: raisedData.currency === 'Not found' ? null : raisedData.currency,
+      supportersCount: siteType === SITE_TYPES.GOFUNDME ? 
+        parseGoFundMeSupporters(data.supportersCount) : 
+        data.supportersCount
     };
 
     // Log warnings for mismatched currencies
@@ -488,6 +597,7 @@ async function scrapeGoFundMe(row) {
     console.log(`   Raised: ${processedData.raisedAmountNormalized ? 
       `${CURRENCY_SYMBOLS[processedData.raisedCurrency] || processedData.raisedCurrency || ''}${processedData.raisedAmountNormalized} (Raw: ${processedData.raisedAmount})` : 
       'Not found'}`);
+    console.log(`   Supporters: ${processedData.supportersCount || 'Not found'}`);
 
     // Attempt database update
     const updated = await updateCampaignData(
@@ -597,15 +707,17 @@ async function processAllCampaigns() {
           throw new Error('Invalid or empty URL');
         }
 
-        if (!campaign.link.includes('gofundme.com')) {
+        // Replace the GoFundMe check with a site type check
+        const siteType = detectSiteType(campaign.link);
+        if (!siteType) {
           skippedCount++;
-          console.log(`⏭️ Skipped: Not a GoFundMe URL`);
+          console.log(`⏭️ Skipped: Not a supported platform URL`);
           continue;
         }
 
         console.log(`⏳ Processing...`);
 
-        const result = await scrapeGoFundMe(campaign).catch(error => {
+        const result = await scrapeCampaign(campaign).catch(error => {
           throw new Error(`Scraping failed: ${error.message}`);
         });
         
