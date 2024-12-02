@@ -500,11 +500,15 @@ async function fetchChuffedData(projectId) {
   }
 }
 
+// Add near the top
+let browserInstance = null;
+
 // Main scraping function
 async function scrapeCampaign(row) {
   await rateLimiter();
   
-  let browser;
+  let page = null;  // Define page at the top level of the function
+  
   try {
     if (!row.link) {
       throw new Error('Invalid URL provided');
@@ -516,6 +520,7 @@ async function scrapeCampaign(row) {
       return false;
     }
 
+    // Handle Chuffed via API
     if (siteType === SITE_TYPES.CHUFFED) {
       const projectId = extractChuffedId(row.link);
       if (!projectId) {
@@ -563,119 +568,136 @@ async function scrapeCampaign(row) {
 
     // Handle GoFundMe via scraping
     if (siteType === SITE_TYPES.GOFUNDME) {
-      browser = await puppeteer.launch({
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--disable-extensions',
-          '--disable-audio',
-          '--disable-notifications',
-          '--disable-background-timer-throttling',
-          '--disable-backgrounding-occluded-windows',
-          '--disable-ipc-flooding-protection'
-        ]
-      });
-
-      const page = await browser.newPage();
+      // Initialize browser if not exists
+      if (!browserInstance) {
+        browserInstance = await puppeteer.launch({
+          headless: true,
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--disable-extensions',
+            '--disable-audio',
+            '--disable-notifications',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-ipc-flooding-protection'
+          ],
+          defaultViewport: { width: 800, height: 600 },
+          ignoreHTTPSErrors: true,
+          waitForInitialPage: false
+        });
+      }
+      
+      // Use existing browser instance
+      page = await browserInstance.newPage();
       
       await page.setRequestInterception(true);
       page.on('request', (request) => {
         const resourceType = request.resourceType();
-        if (['document', 'script', 'xhr', 'fetch'].includes(resourceType)) {
-          request.continue();
-        } else {
+        const url = request.url();
+        
+        // Block unnecessary resources
+        if (
+          resourceType === 'image' ||
+          resourceType === 'stylesheet' ||
+          resourceType === 'font' ||
+          url.includes('analytics') ||
+          url.includes('tracking') ||
+          url.includes('advertisement')
+        ) {
           request.abort();
+        } else {
+          request.continue();
         }
       });
 
       await page.setViewport({ width: 800, height: 600 });
       await page.setCacheEnabled(false);
 
-      try {
-        await retry(async () => {
-          await page.goto(row.link, {
-            waitUntil: 'networkidle0',
-            timeout: 30000
-          });
-        });
-      } catch (error) {
-        throw new Error(`Failed to load page after retries: ${error.message}`);
-      }
-
-      const selectors = SELECTORS[siteType];
-
-      // Check each element individually
-      const elementPresence = {};
-      for (const [key, selector] of Object.entries(selectors)) {
         try {
-          await page.waitForSelector(selector, { 
-            timeout: 10000,
-            visible: true
+          await retry(async () => {
+            await page.goto(row.link, {
+              waitUntil: 'networkidle0',
+              timeout: 30000
+            });
           });
-          elementPresence[key] = true;
         } catch (error) {
-          elementPresence[key] = false;
-          console.log(`⚠️ Warning: ${key} element not found (${selector})`);
+          throw new Error(`Failed to load page after retries: ${error.message}`);
         }
-      }
 
-      if (!Object.values(elementPresence).some(present => present)) {
-        throw new Error('No required elements found on page');
-      }
+        const selectors = SELECTORS[siteType];
 
-      const data = await page.evaluate((selectors, siteType, SITE_TYPES) => {
-        const getData = (selector) => {
-          const element = document.querySelector(selector);
-          return {
-            exists: !!element,
-            text: element?.textContent?.trim() || null,
-            html: element?.innerHTML?.trim() || null
-          };
-        };
-
-        const title = getData(selectors.title);
-        const raised = getData(selectors.raised);
-        const goal = getData(selectors.goal);
-        const supporters = getData(selectors.supporters);
-
-        return {
-          title: title.text,
-          goalText: goal.text,
-          raisedText: raised.html || raised.text,
-          supportersCount: supporters.text,
-          elementStatus: {
-            title: title.exists,
-            raised: raised.exists,
-            goal: goal.exists,
-            supporters: supporters?.exists
+        // Check each element individually
+        const elementPresence = {};
+        for (const [key, selector] of Object.entries(selectors)) {
+          try {
+            await page.waitForSelector(selector, { 
+              timeout: 10000,
+              visible: true
+            });
+            elementPresence[key] = true;
+          } catch (error) {
+            elementPresence[key] = false;
+            console.log(`⚠️ Warning: ${key} element not found (${selector})`);
           }
-        };
-      }, selectors, siteType, SITE_TYPES);
+        }
 
-      const raisedData = parseRaisedAmount(data.raisedText);
-      const targetData = parseTargetAmount(data.goalText);
-      const supportersCount = parseGoFundMeSupporters(data.supportersCount);
+        if (!Object.values(elementPresence).some(present => present)) {
+          throw new Error('No required elements found on page');
+        }
 
-      console.log(' Extracted Data:');
-      console.log(`   Title: ${data.title || 'Not found'}`);
-      console.log(`   Goal: ${targetData.amount} ${targetData.currency}`);
-      console.log(`   Raised: ${raisedData.amount} ${raisedData.currency}`);
-      console.log(`   Donations: ${supportersCount || 'Not found'}`);
+        const data = await page.evaluate((selectors, siteType, SITE_TYPES) => {
+          const getData = (selector) => {
+            const element = document.querySelector(selector);
+            return {
+              exists: !!element,
+              text: element?.textContent?.trim() || null,
+              html: element?.innerHTML?.trim() || null
+            };
+          };
 
-      const updated = await updateCampaignData(
-        row.id,
-        targetData.amount === 'Not found' ? null : targetData.amount,
-        raisedData.amount === 'Not found' ? null : raisedData.amount,
-        data.title,
-        raisedData.currency === 'Not found' ? null : raisedData.currency
-      );
+          const title = getData(selectors.title);
+          const raised = getData(selectors.raised);
+          const goal = getData(selectors.goal);
+          const supporters = getData(selectors.supporters);
 
-      if (!updated) {
-        throw new Error('Database update failed - no changes were made');
-      }
+          return {
+            title: title.text,
+            goalText: goal.text,
+            raisedText: raised.html || raised.text,
+            supportersCount: supporters.text,
+            elementStatus: {
+              title: title.exists,
+              raised: raised.exists,
+              goal: goal.exists,
+              supporters: supporters?.exists
+            }
+          };
+        }, selectors, siteType, SITE_TYPES);
+
+        const raisedData = parseRaisedAmount(data.raisedText);
+        const targetData = parseTargetAmount(data.goalText);
+        const supportersCount = parseGoFundMeSupporters(data.supportersCount);
+
+        console.log(' Extracted Data:');
+        console.log(`   Title: ${data.title || 'Not found'}`);
+        console.log(`   Goal: ${targetData.amount} ${targetData.currency}`);
+        console.log(`   Raised: ${raisedData.amount} ${raisedData.currency}`);
+        console.log(`   Donations: ${supportersCount || 'Not found'}`);
+
+        const updated = await updateCampaignData(
+          row.id,
+          targetData.amount === 'Not found' ? null : targetData.amount,
+          raisedData.amount === 'Not found' ? null : raisedData.amount,
+          data.title,
+          raisedData.currency === 'Not found' ? null : raisedData.currency
+        );
+
+        if (!updated) {
+          throw new Error('Database update failed - no changes were made');
+        }
 
       return true;
     }
@@ -684,17 +706,20 @@ async function scrapeCampaign(row) {
     console.error(`❌ Error processing campaign: ${error.message}`);
     return false;
   } finally {
-    if (browser) {
-      await browser.close().catch(err => 
-        console.error(`⚠️ Warning: Browser cleanup failed - ${err.message}`)
-      );
-    }
+    // Don't close browser, just the page
+    if (page) await page.close();
   }
 }
 
-// Add this function near the top with other helper functions
+// Add this helper function near the top with other helper functions
+function setTerminalTitle(title) {
+  process.stdout.write(`\x1b]0;${title}\x07`);
+}
+
+// Modify the displayLogo function
 function displayLogo() {
     console.clear();
+    setTerminalTitle('Sunbird Scanner - Running');
     console.log(
         figlet.textSync('Sunbird Scanner', {
             font: 'Standard',
@@ -760,7 +785,7 @@ async function processAllCampaigns() {
         console.log(`\n--- Campaign ${i + 1}/${totalToProcess} (${percentage}%) ---`);
       }
       
-      console.log(`URL: ${campaign.link} | ID: ${campaign.id}`);
+      console.log(`ID: ${campaign.id} | URL: ${campaign.link}`);
 
       try {
         if (!campaign.link) {
@@ -832,8 +857,10 @@ async function processAllCampaigns() {
 // Add near the top of the file
 let isShuttingDown = false;
 
+// Also update the shutdown handler to change the title
 process.on('SIGINT', async () => {
   console.log('\n\n🛑 Graceful shutdown initiated...');
+  setTerminalTitle('Sunbird Scanner - Shutting down');
   isShuttingDown = true;
   
   // Wait for current operation to complete
@@ -849,6 +876,21 @@ if (global.gc) {
     global.gc();
   }, 30000);
 }
+
+// Add near other helper functions
+function cleanupMemory() {
+  if (global.gc) {
+    global.gc();
+  }
+  
+  // Clear response time history periodically
+  if (metrics.responseTimesMs.length > 1000) {
+    metrics.responseTimesMs = metrics.responseTimesMs.slice(-100);
+  }
+}
+
+// Add to scrapeCampaign after each successful scrape
+await cleanupMemory();
 
 // Execute the main process
 processAllCampaigns()
