@@ -215,7 +215,8 @@ async function updateCampaignData(id, target, raised, name, currency) {
         target: parseInt(target) || null,
         raised: parseInt(raised) || null,
         title: name || null,
-        currency: currency || null
+        currency: currency || null,
+        updated_at: new Date().toISOString()
       })
       .eq('id', id)
       .select();
