@@ -620,7 +620,7 @@ async function scrapeCampaign(row) {
           await retry(async () => {
             await page.goto(row.link, {
               waitUntil: 'networkidle0',
-              timeout: 30000
+              timeout: 60000
             });
           });
         } catch (error) {
