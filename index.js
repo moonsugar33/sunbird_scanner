@@ -611,8 +611,8 @@ async function scrapeCampaign(row, browser) {
         }
 
         const campaign = chuffedData.campaign;
-        const raised = campaign.collected?.amount || 0;
-        const target = campaign.target?.amount || 0;
+        const raised = (campaign.collected?.amount || 0) / 100;
+        const target = (campaign.target?.amount || 0) / 100;
         const currency = campaign.target?.currency || 'AUD';
         const title = campaign.title || '';
         
