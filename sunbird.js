@@ -611,8 +611,8 @@ async function scrapeCampaign(row, browser) {
         }
 
         const campaign = chuffedData.campaign;
-        const raised = campaign.collected?.amount || 0;
-        const target = campaign.target?.amount || 0;
+        const raised = (campaign.collected?.amount || 0) / 100;
+        const target = (campaign.target?.amount || 0) / 100;
         const currency = campaign.target?.currency || 'AUD';
         const title = campaign.title || '';
         
@@ -868,6 +868,8 @@ async function processCampaign(campaign, current, total, stats, browser) {
   console.log(`\n--- Campaign ${current}/${total} (${percentage}%) ---`);
   console.log(`ID: ${campaign.id} | URL: ${campaign.link}`);
 
+  const campaignStartTime = Date.now();
+  
   try {
     if (!campaign.link) throw new Error('Invalid or empty URL');
 
@@ -881,7 +883,6 @@ async function processCampaign(campaign, current, total, stats, browser) {
     await rateLimiter();
     console.log(`⏳ Processing...`);
 
-    // Update scrapeCampaign to use the shared browser instance
     const result = await scrapeCampaign(campaign, browser);
     
     if (result) {
@@ -893,12 +894,25 @@ async function processCampaign(campaign, current, total, stats, browser) {
         console.log(`⚠️ Warning: Campaign not found`);
       } else {
         stats.failed++;
+        failedCampaigns.push({
+          id: campaign.id,
+          url: campaign.link,
+          reason: 'Processing failed'
+        });
         console.log(`❌ Error: Failed to process campaign`);
       }
     }
   } catch (error) {
     stats.failed++;
+    failedCampaigns.push({
+      id: campaign.id,
+      url: campaign.link,
+      reason: error.message
+    });
     console.log(`❌ Error: ${error.message}`);
+  } finally {
+    const duration = Date.now() - campaignStartTime;
+    timingData.recordCampaignTime(campaign.id, duration);
   }
 }
 
@@ -939,6 +953,39 @@ function cleanupMemory() {
 
 // Add to scrapeCampaign after each successful scrape
 await cleanupMemory();
+
+// Add near the top with other constants and global variables
+const failedCampaigns = [];
+const timingData = {
+  startTime: null,
+  campaignTimes: [],
+  
+  start() {
+    this.startTime = Date.now();
+  },
+  
+  recordCampaignTime(id, duration) {
+    this.campaignTimes.push({ id, duration });
+  },
+  
+  getSummary() {
+    const totalDuration = Date.now() - this.startTime;
+    const avgDuration = this.campaignTimes.length > 0 
+      ? this.campaignTimes.reduce((acc, curr) => acc + curr.duration, 0) / this.campaignTimes.length 
+      : 0;
+    
+    return {
+      totalRuntime: `${(totalDuration / 1000 / 60).toFixed(2)} minutes`,
+      averagePerCampaign: `${(avgDuration / 1000).toFixed(2)} seconds`,
+      slowestCampaign: this.campaignTimes.length > 0 
+        ? Math.max(...this.campaignTimes.map(t => t.duration)) / 1000 
+        : 0,
+      fastestCampaign: this.campaignTimes.length > 0 
+        ? Math.min(...this.campaignTimes.map(t => t.duration)) / 1000 
+        : 0
+    };
+  }
+};
 
 // Execute the main process
 processAllCampaigns()
