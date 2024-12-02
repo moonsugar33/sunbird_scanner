@@ -75,9 +75,9 @@ const RATE_LIMIT = {
 
 // Add near other constants (like CURRENCY_MAPPING)
 const ERROR_STRATEGIES = {
-  'TimeoutError': { retries: 3, delay: 5000 },
+  'TimeoutError': { retries: 4, delay: 10000 },
   'NetworkError': { retries: 5, delay: 3000 },
-  'default': { retries: 2, delay: 2000 }
+  'default': { retries: 3, delay: 5000 }
 };
 
 // Add near other constants
@@ -432,8 +432,8 @@ const waitForAnimation = async (page, selector, timeout = 5000) => {
 const parseGoFundMeSupporters = (text) => {
   if (!text) return null;
 
-  // Match the number and check for K/k suffix
-  const match = text.match(/([\d,.]+)(K|k)?\s*donations/i);
+  // Match the number and check for K/k suffix, allow for both donation/donations
+  const match = text.match(/([\d,.]+)(K|k)?\s*donation[s]?/i);
   if (match) {
     // Remove commas and convert to float
     const number = parseFloat(match[1].replace(/,/g, ''));
@@ -506,141 +506,124 @@ let browserInstance = null;
 // Main scraping function
 async function scrapeCampaign(row) {
   await rateLimiter();
-  
-  let page = null;  // Define page at the top level of the function
-  
+  let page = null;
+
   try {
     if (!row.link) {
       throw new Error('Invalid URL provided');
     }
 
-    const siteType = detectSiteType(row.link);
-    if (!siteType) {
-      console.log(`⏭️ Skipped: Unsupported platform URL`);
-      return false;
-    }
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Overall scraping timeout')), 180000);
+    });
 
-    // Handle Chuffed via API
-    if (siteType === SITE_TYPES.CHUFFED) {
-      const projectId = extractChuffedId(row.link);
-      if (!projectId) {
-        throw new Error('Failed to extract project ID from URL');
+    const scrapingPromise = async () => {
+      const siteType = detectSiteType(row.link);
+      if (!siteType) {
+        console.log(`⏭️ Skipped: Unsupported platform URL`);
+        return false;
       }
 
-      const chuffedData = await fetchChuffedData(projectId);
-      if (!chuffedData) {
-        throw new Error('Failed to fetch data from Chuffed API');
-      }
-
-      // Convert cents to whole currency units by dividing by 100
-      const title = chuffedData?.campaign?.title || 'Not found';
-      const totalSupporters = chuffedData?.campaign?.donations?.totalCount || 'Not found';
-      const totalRaised = chuffedData?.campaign?.collected?.amount 
-        ? Math.floor(parseInt(chuffedData.campaign.collected.amount) / 100)
-        : 'Not found';
-      const currencySymbol = chuffedData?.campaign?.target?.currencyNode?.symbol || 'Not found';
-      // Convert currency symbol to three-letter code
-      const currency = CURRENCY_MAPPING[currencySymbol] || currencySymbol;
-      const targetAmount = chuffedData?.campaign?.target?.amount 
-        ? Math.floor(parseInt(chuffedData.campaign.target.amount) / 100)
-        : 'Not found';
-
-      console.log(' Extracted Data:');
-      console.log(`   Title: ${title}`);
-      console.log(`   Goal: ${targetAmount} ${currency}`);
-      console.log(`   Raised: ${totalRaised} ${currency}`);
-      console.log(`   Donations: ${totalSupporters}`);
-
-      const updated = await updateCampaignData(
-        row.id,
-        targetAmount === 'Not found' ? null : targetAmount,
-        totalRaised === 'Not found' ? null : totalRaised,
-        title,
-        currency === 'Not found' ? null : currency
-      );
-
-      if (!updated) {
-        throw new Error('Database update failed - no changes were made');
-      }
-
-      return true;
-    }
-
-    // Handle GoFundMe via scraping
-    if (siteType === SITE_TYPES.GOFUNDME) {
-      // Initialize browser if not exists
-      if (!browserInstance) {
-        browserInstance = await puppeteer.launch({
-          headless: true,
-          args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--disable-extensions',
-            '--disable-audio',
-            '--disable-notifications',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-ipc-flooding-protection'
-          ],
-          defaultViewport: { width: 800, height: 600 },
-          ignoreHTTPSErrors: true,
-          waitForInitialPage: false
-        });
-      }
-      
-      // Use existing browser instance
-      page = await browserInstance.newPage();
-      
-      await page.setRequestInterception(true);
-      page.on('request', (request) => {
-        const resourceType = request.resourceType();
-        const url = request.url();
-        
-        // Block unnecessary resources
-        if (
-          resourceType === 'image' ||
-          resourceType === 'stylesheet' ||
-          resourceType === 'font' ||
-          url.includes('analytics') ||
-          url.includes('tracking') ||
-          url.includes('advertisement')
-        ) {
-          request.abort();
-        } else {
-          request.continue();
+      // Handle Chuffed via API
+      if (siteType === SITE_TYPES.CHUFFED) {
+        const projectId = extractChuffedId(row.link);
+        if (!projectId) {
+          throw new Error('Failed to extract project ID from URL');
         }
-      });
 
-      await page.setViewport({ width: 800, height: 600 });
-      await page.setCacheEnabled(false);
+        const chuffedData = await fetchChuffedData(projectId);
+        if (!chuffedData) {
+          throw new Error('Failed to fetch data from Chuffed API');
+        }
 
+        // Convert cents to whole currency units by dividing by 100
+        const title = chuffedData?.campaign?.title || 'Not found';
+        const totalSupporters = chuffedData?.campaign?.donations?.totalCount || 'Not found';
+        const totalRaised = chuffedData?.campaign?.collected?.amount 
+          ? Math.floor(parseInt(chuffedData.campaign.collected.amount) / 100)
+          : 'Not found';
+        const currencySymbol = chuffedData?.campaign?.target?.currencyNode?.symbol || 'Not found';
+        // Convert currency symbol to three-letter code
+        const currency = CURRENCY_MAPPING[currencySymbol] || currencySymbol;
+        const targetAmount = chuffedData?.campaign?.target?.amount 
+          ? Math.floor(parseInt(chuffedData.campaign.target.amount) / 100)
+          : 'Not found';
+
+        console.log(' Extracted Data:');
+        console.log(`   Title: ${title}`);
+        console.log(`   Goal: ${targetAmount} ${currency}`);
+        console.log(`   Raised: ${totalRaised} ${currency}`);
+        console.log(`   Donations: ${totalSupporters}`);
+
+        const updated = await updateCampaignData(
+          row.id,
+          targetAmount === 'Not found' ? null : targetAmount,
+          totalRaised === 'Not found' ? null : totalRaised,
+          title,
+          currency === 'Not found' ? null : currency
+        );
+
+        if (!updated) {
+          throw new Error('Database update failed - no changes were made');
+        }
+
+        return true;
+      }
+
+      // Handle GoFundMe via scraping
+      if (siteType === SITE_TYPES.GOFUNDME) {
+        if (!browserInstance) {
+          browserInstance = await puppeteer.launch({
+            headless: true,
+            args: [
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              '--disable-dev-shm-usage',
+              '--disable-gpu',
+              '--disable-extensions',
+              '--disable-audio',
+              '--disable-notifications',
+              '--disable-background-timer-throttling',
+              '--disable-backgrounding-occluded-windows',
+              '--disable-ipc-flooding-protection'
+            ],
+            defaultViewport: { width: 800, height: 600 },
+            ignoreHTTPSErrors: true,
+            waitForInitialPage: false
+          });
+        }
+        
+        page = await browserInstance.newPage();
+        
         try {
           await retry(async () => {
-            await page.goto(row.link, {
-              waitUntil: 'networkidle0',
-              timeout: 30000
-            });
-          });
+            await Promise.race([
+              page.goto(row.link, {
+                waitUntil: 'networkidle0',
+                timeout: 90000
+              }),
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('TimeoutError')), 90000)
+              )
+            ]);
+          }, 'TimeoutError');
         } catch (error) {
           throw new Error(`Failed to load page after retries: ${error.message}`);
         }
 
         const selectors = SELECTORS[siteType];
-
-        // Check each element individually
         const elementPresence = {};
         for (const [key, selector] of Object.entries(selectors)) {
           try {
-            await page.waitForSelector(selector, { 
-              timeout: 10000,
-              visible: true
-            });
+            await Promise.race([
+              page.waitForSelector(selector, { timeout: 10000, visible: true }),
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error(`Timeout waiting for ${key}`)), 10000)
+              )
+            ]);
             elementPresence[key] = true;
           } catch (error) {
             elementPresence[key] = false;
-            console.log(`⚠️ Warning: ${key} element not found (${selector})`);
           }
         }
 
@@ -699,21 +682,25 @@ async function scrapeCampaign(row) {
           throw new Error('Database update failed - no changes were made');
         }
 
-      return true;
-    }
+        return true;
+      }
+
+      return false;
+    };
+
+    return await Promise.race([scrapingPromise(), timeoutPromise]);
 
   } catch (error) {
     console.error(`❌ Error processing campaign: ${error.message}`);
     return false;
   } finally {
-    // Don't close browser, just the page
     if (page) await page.close();
   }
 }
 
 // Add this helper function near the top with other helper functions
 function setTerminalTitle(title) {
-  process.stdout.write(`\x1b]0;${title}\x07`);
+  process.stdout.write(`\x1b[0;${title}\x07`);
 }
 
 // Modify the displayLogo function
