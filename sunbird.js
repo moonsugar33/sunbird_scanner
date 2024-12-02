@@ -68,16 +68,17 @@ const CURRENCY_SYMBOLS = {
 
 // Add near the top with other constants
 const RATE_LIMIT = {
-  requestsPerMinute: 20,
-  minDelay: 1000,
-  maxDelay: 3000
+  requestsPerMinute: 30,
+  minDelay: 5000,
+  maxDelay: 20000
 };
 
 // Add near other constants (like CURRENCY_MAPPING)
 const ERROR_STRATEGIES = {
-  'TimeoutError': { retries: 4, delay: 10000 },
-  'NetworkError': { retries: 5, delay: 3000 },
-  'default': { retries: 3, delay: 5000 }
+  'TimeoutError': { retries: 3, delay: 5000 },
+  'NetworkError': { retries: 3, delay: 3000 },
+  'ElementsNotFound': { retries: 3, delay: 2000 },
+  'default': { retries: 2, delay: 2000 }
 };
 
 // Add near other constants
@@ -101,22 +102,94 @@ const SELECTORS = {
   }
 };
 
-// Replace the existing delay in scrapeGoFundMe
+// Add near the top with other constants
+const BATCH_SIZE = 5; // Number of concurrent processes
+const BROWSER_CONFIG = {
+  headless: true,
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--disable-extensions',
+    '--disable-audio',
+    '--disable-notifications',
+    '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-ipc-flooding-protection'
+  ],
+  defaultViewport: { width: 800, height: 600 },
+  ignoreHTTPSErrors: true,
+  waitForInitialPage: false
+};
+
+// Update the rate limiter to be a simpler but effective implementation
 const rateLimiter = (() => {
   let lastRequest = Date.now();
+  const minWait = Math.floor(60000 / RATE_LIMIT.requestsPerMinute); // Minimum time between requests
+  
   return async () => {
     const now = Date.now();
-    const timeSinceLastRequest = now - lastRequest;
-    const minWait = (60000 / RATE_LIMIT.requestsPerMinute);
-    const randomDelay = Math.floor(Math.random() * (RATE_LIMIT.maxDelay - RATE_LIMIT.minDelay) + RATE_LIMIT.minDelay);
-    const waitTime = Math.max(minWait - timeSinceLastRequest, randomDelay);
+    const elapsed = now - lastRequest;
+    const delay = Math.max(0, minWait - elapsed);
     
-    if (waitTime > 0) {
-      await delay(waitTime);
+    if (delay > 0) {
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
+    
     lastRequest = Date.now();
   };
 })();
+
+// Add browser pool management
+const browserPool = {
+  instances: [],
+  maxInstances: BATCH_SIZE,
+  
+  async getInstance() {
+    // Reuse existing instance if available
+    const availableInstance = this.instances.find(i => !i.inUse);
+    if (availableInstance) {
+      availableInstance.inUse = true;
+      return availableInstance;
+    }
+    
+    // Create new instance if under limit
+    if (this.instances.length < this.maxInstances) {
+      const browser = await puppeteer.launch(BROWSER_CONFIG);
+      const instance = { browser, inUse: true };
+      this.instances.push(instance);
+      return instance;
+    }
+    
+    // Wait for an instance to become available
+    return new Promise(resolve => {
+      const checkInterval = setInterval(() => {
+        const instance = this.instances.find(i => !i.inUse);
+        if (instance) {
+          clearInterval(checkInterval);
+          instance.inUse = true;
+          resolve(instance);
+        }
+      }, 100);
+    });
+  },
+  
+  releaseInstance(instance) {
+    instance.inUse = false;
+  },
+  
+  async cleanup() {
+    await Promise.all(this.instances.map(async i => {
+      try {
+        await i.browser.close();
+      } catch (error) {
+        console.error('Error closing browser:', error);
+      }
+    }));
+    this.instances = [];
+  }
+};
 
 // Helper functions
 async function fetchCampaignUrls() {
@@ -142,7 +215,8 @@ async function updateCampaignData(id, target, raised, name, currency) {
         target: parseInt(target) || null,
         raised: parseInt(raised) || null,
         title: name || null,
-        currency: currency || null
+        currency: currency || null,
+        updated_at: new Date().toISOString()
       })
       .eq('id', id)
       .select();
@@ -504,7 +578,7 @@ async function fetchChuffedData(projectId) {
 let browserInstance = null;
 
 // Main scraping function
-async function scrapeCampaign(row) {
+async function scrapeCampaign(row, browser) {
   await rateLimiter();
   let page = null;
 
@@ -514,7 +588,7 @@ async function scrapeCampaign(row) {
     }
 
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Overall scraping timeout')), 180000);
+      setTimeout(() => reject(new Error('Overall scraping timeout')), 120000);
     });
 
     const scrapingPromise = async () => {
@@ -528,39 +602,32 @@ async function scrapeCampaign(row) {
       if (siteType === SITE_TYPES.CHUFFED) {
         const projectId = extractChuffedId(row.link);
         if (!projectId) {
-          throw new Error('Failed to extract project ID from URL');
+          throw new Error('Invalid Chuffed URL format');
         }
 
         const chuffedData = await fetchChuffedData(projectId);
-        if (!chuffedData) {
-          throw new Error('Failed to fetch data from Chuffed API');
+        if (!chuffedData || !chuffedData.campaign) {
+          throw new Error('Failed to fetch Chuffed campaign data');
         }
 
-        // Convert cents to whole currency units by dividing by 100
-        const title = chuffedData?.campaign?.title || 'Not found';
-        const totalSupporters = chuffedData?.campaign?.donations?.totalCount || 'Not found';
-        const totalRaised = chuffedData?.campaign?.collected?.amount 
-          ? Math.floor(parseInt(chuffedData.campaign.collected.amount) / 100)
-          : 'Not found';
-        const currencySymbol = chuffedData?.campaign?.target?.currencyNode?.symbol || 'Not found';
-        // Convert currency symbol to three-letter code
-        const currency = CURRENCY_MAPPING[currencySymbol] || currencySymbol;
-        const targetAmount = chuffedData?.campaign?.target?.amount 
-          ? Math.floor(parseInt(chuffedData.campaign.target.amount) / 100)
-          : 'Not found';
-
+        const campaign = chuffedData.campaign;
+        const raised = campaign.collected?.amount || 0;
+        const target = campaign.target?.amount || 0;
+        const currency = campaign.target?.currency || 'AUD';
+        const title = campaign.title || '';
+        
         console.log(' Extracted Data:');
-        console.log(`   Title: ${title}`);
-        console.log(`   Goal: ${targetAmount} ${currency}`);
-        console.log(`   Raised: ${totalRaised} ${currency}`);
-        console.log(`   Donations: ${totalSupporters}`);
+        console.log(`   Title: ${title || 'Not found'}`);
+        console.log(`   Goal: ${target} ${currency}`);
+        console.log(`   Raised: ${raised} ${currency}`);
+        console.log(`   Donations: ${campaign.donations?.totalCount || 'Not found'}`);
 
         const updated = await updateCampaignData(
           row.id,
-          targetAmount === 'Not found' ? null : targetAmount,
-          totalRaised === 'Not found' ? null : totalRaised,
+          target || null,
+          raised || null,
           title,
-          currency === 'Not found' ? null : currency
+          currency
         );
 
         if (!updated) {
@@ -570,119 +637,131 @@ async function scrapeCampaign(row) {
         return true;
       }
 
-      // Handle GoFundMe via scraping
+      // Existing GoFundMe handling...
       if (siteType === SITE_TYPES.GOFUNDME) {
-        if (!browserInstance) {
-          browserInstance = await puppeteer.launch({
-            headless: true,
-            args: [
-              '--no-sandbox',
-              '--disable-setuid-sandbox',
-              '--disable-dev-shm-usage',
-              '--disable-gpu',
-              '--disable-extensions',
-              '--disable-audio',
-              '--disable-notifications',
-              '--disable-background-timer-throttling',
-              '--disable-backgrounding-occluded-windows',
-              '--disable-ipc-flooding-protection'
-            ],
-            defaultViewport: { width: 800, height: 600 },
-            ignoreHTTPSErrors: true,
-            waitForInitialPage: false
-          });
-        }
-        
-        page = await browserInstance.newPage();
+        page = await browser.newPage();
         
         try {
-          await retry(async () => {
-            await Promise.race([
-              page.goto(row.link, {
-                waitUntil: 'networkidle0',
-                timeout: 90000
-              }),
-              new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('TimeoutError')), 90000)
-              )
-            ]);
-          }, 'TimeoutError');
-        } catch (error) {
-          throw new Error(`Failed to load page after retries: ${error.message}`);
-        }
-
-        const selectors = SELECTORS[siteType];
-        const elementPresence = {};
-        for (const [key, selector] of Object.entries(selectors)) {
+          // Initial page load attempt with shorter timeout
           try {
             await Promise.race([
-              page.waitForSelector(selector, { timeout: 10000, visible: true }),
+              page.goto(row.link, {
+                waitUntil: 'domcontentloaded',
+                timeout: 15000  // Shorter initial timeout
+              }),
               new Promise((_, reject) => 
-                setTimeout(() => reject(new Error(`Timeout waiting for ${key}`)), 10000)
+                setTimeout(() => reject(new Error('TimeoutError')), 15000)
               )
             ]);
-            elementPresence[key] = true;
           } catch (error) {
-            elementPresence[key] = false;
+            // If initial fast attempt fails, then try with retries
+            await retry(async () => {
+              await Promise.race([
+                page.goto(row.link, {
+                  waitUntil: 'domcontentloaded',
+                  timeout: 30000
+                }),
+                new Promise((_, reject) => 
+                  setTimeout(() => reject(new Error('TimeoutError')), 30000)
+                )
+              ]);
+            }, 'TimeoutError');
           }
-        }
 
-        if (!Object.values(elementPresence).some(present => present)) {
-          throw new Error('No required elements found on page');
-        }
+          const selectors = SELECTORS[siteType];
 
-        const data = await page.evaluate((selectors, siteType, SITE_TYPES) => {
-          const getData = (selector) => {
-            const element = document.querySelector(selector);
-            return {
-              exists: !!element,
-              text: element?.textContent?.trim() || null,
-              html: element?.innerHTML?.trim() || null
-            };
-          };
+          // Initial quick element check
+          try {
+            const elementPromises = Object.entries(selectors).map(async ([key, selector]) => {
+              try {
+                await page.waitForSelector(selector, { timeout: 2000 });  // Shorter initial timeout
+                return true;
+              } catch {
+                return false;
+              }
+            });
 
-          const title = getData(selectors.title);
-          const raised = getData(selectors.raised);
-          const goal = getData(selectors.goal);
-          const supporters = getData(selectors.supporters);
-
-          return {
-            title: title.text,
-            goalText: goal.text,
-            raisedText: raised.html || raised.text,
-            supportersCount: supporters.text,
-            elementStatus: {
-              title: title.exists,
-              raised: raised.exists,
-              goal: goal.exists,
-              supporters: supporters?.exists
+            const elementResults = await Promise.all(elementPromises);
+            if (!elementResults.some(result => result)) {
+              throw new Error('ElementsNotFound');
             }
-          };
-        }, selectors, siteType, SITE_TYPES);
+          } catch (error) {
+            // If quick check fails, then try with retries
+            await retry(async () => {
+              const elementPromises = Object.entries(selectors).map(async ([key, selector]) => {
+                try {
+                  await page.waitForSelector(selector, { timeout: 5000 });
+                  return true;
+                } catch {
+                  return false;
+                }
+              });
 
-        const raisedData = parseRaisedAmount(data.raisedText);
-        const targetData = parseTargetAmount(data.goalText);
-        const supportersCount = parseGoFundMeSupporters(data.supportersCount);
+              const elementResults = await Promise.all(elementPromises);
+              if (!elementResults.some(result => result)) {
+                throw new Error('ElementsNotFound');
+              }
+              return true;
+            }, 'ElementsNotFound');
+          }
 
-        console.log(' Extracted Data:');
-        console.log(`   Title: ${data.title || 'Not found'}`);
-        console.log(`   Goal: ${targetData.amount} ${targetData.currency}`);
-        console.log(`   Raised: ${raisedData.amount} ${raisedData.currency}`);
-        console.log(`   Donations: ${supportersCount || 'Not found'}`);
+          const data = await page.evaluate((selectors) => {
+            const getData = (selector) => {
+              const element = document.querySelector(selector);
+              return {
+                exists: !!element,
+                text: element?.textContent?.trim() || null,
+                html: element?.innerHTML?.trim() || null
+              };
+            };
 
-        const updated = await updateCampaignData(
-          row.id,
-          targetData.amount === 'Not found' ? null : targetData.amount,
-          raisedData.amount === 'Not found' ? null : raisedData.amount,
-          data.title,
-          raisedData.currency === 'Not found' ? null : raisedData.currency
-        );
+            const title = getData(selectors.title);
+            const raised = getData(selectors.raised);
+            const goal = getData(selectors.goal);
+            const supporters = getData(selectors.supporters);
 
-        if (!updated) {
-          throw new Error('Database update failed - no changes were made');
+            return {
+              title: title.text,
+              goalText: goal.text,
+              raisedText: raised.html || raised.text,
+              supportersCount: supporters.text,
+              elementStatus: {
+                title: title.exists,
+                raised: raised.exists,
+                goal: goal.exists,
+                supporters: supporters?.exists
+              }
+            };
+          }, selectors);
+
+          const raisedData = parseRaisedAmount(data.raisedText);
+          const targetData = parseTargetAmount(data.goalText);
+          const supportersCount = parseGoFundMeSupporters(data.supportersCount);
+
+          console.log(' Extracted Data:');
+          console.log(`   Title: ${data.title || 'Not found'}`);
+          console.log(`   Goal: ${targetData.amount} ${targetData.currency}`);
+          console.log(`   Raised: ${raisedData.amount} ${raisedData.currency}`);
+          console.log(`   Donations: ${supportersCount || 'Not found'}`);
+
+          const updated = await updateCampaignData(
+            row.id,
+            targetData.amount === 'Not found' ? null : targetData.amount,
+            raisedData.amount === 'Not found' ? null : raisedData.amount,
+            data.title,
+            raisedData.currency === 'Not found' ? null : raisedData.currency
+          );
+
+          if (!updated) {
+            throw new Error('Database update failed - no changes were made');
+          }
+
+          return true;
+        } catch (error) {
+          throw new Error(`Failed to load page after retries: ${error.message}`);
+        } finally {
+          if (page) await page.close();
         }
-
-        return true;
       }
 
       return false;
@@ -691,16 +770,16 @@ async function scrapeCampaign(row) {
     return await Promise.race([scrapingPromise(), timeoutPromise]);
 
   } catch (error) {
-    console.error(`❌ Error processing campaign: ${error.message}`);
+    if (!error.message.includes('retry')) {
+      console.error(`❌ Error processing campaign: ${error.message}`);
+    }
     return false;
-  } finally {
-    if (page) await page.close();
   }
 }
 
 // Add this helper function near the top with other helper functions
 function setTerminalTitle(title) {
-  process.stdout.write(`\x1b[0;${title}\x07`);
+  process.stdout.write(`\x1b]0;${title}\x1b\\`);
 }
 
 // Modify the displayLogo function
@@ -717,127 +796,109 @@ function displayLogo() {
     console.log('\n');
 }
 
-// Main process function
+// Update the main process function to use a single optimized runner
 async function processAllCampaigns() {
   try {
     displayLogo();
     
     const campaigns = await fetchCampaignUrls();
-    if (!campaigns || campaigns.length === 0) {
+    if (!campaigns?.length) {
       console.log('No campaigns found to process');
       return;
     }
 
+    // Process command line arguments
     const args = process.argv.slice(2);
-    let startIndex, endIndex, totalToProcess;
-    let campaignsToProcess;
-
-    if (args.indexOf('--start') !== -1) {
-      // Keep startIndex as the actual number input (no subtraction)
-      startIndex = parseInt(args[args.indexOf('--start') + 1]);
-      endIndex = parseInt(args[args.indexOf('--end') + 1]);
-      totalToProcess = endIndex - startIndex + 1; // Add 1 to include both start and end numbers
-      
-      // Only subtract 1 when using as array index
-      const sliceStart = startIndex - 1;
-      campaignsToProcess = campaigns.slice(sliceStart, endIndex);
-    } else {
-      startIndex = 1; // Start from 1 for consistency
-      endIndex = campaigns.length;
-      totalToProcess = campaigns.length;
-      campaignsToProcess = campaigns;
-    }
+    const startIndex = args.indexOf('--start') !== -1 ? 
+      parseInt(args[args.indexOf('--start') + 1]) : 1;
+    const endIndex = args.indexOf('--end') !== -1 ? 
+      parseInt(args[args.indexOf('--end') + 1]) : campaigns.length;
+    
+    const campaignsToProcess = campaigns.slice(startIndex - 1, endIndex);
+    const totalToProcess = campaignsToProcess.length;
 
     console.log(`Found ${campaigns.length} total campaigns`);
     console.log(`Processing campaigns from #${startIndex} to #${endIndex}\n`);
 
-    let successCount = 0;
-    let notFoundCount = 0;
-    let failedCount = 0;
-    let skippedCount = 0;
-
-    for (let i = 0; i < campaignsToProcess.length; i++) {
-      if (isShuttingDown) {
-        console.log('🛑 Shutdown requested, stopping gracefully...');
-        break;
-      }
-
-      const campaign = campaignsToProcess[i];
-      const percentage = Math.round(((i + 1) / totalToProcess) * 100);
-      
-      // When no range specified, show current/total, otherwise show range progress
-      if (args.indexOf('--start') !== -1) {
-        console.log(`\n--- Campaign ${startIndex + i}/${endIndex} (${percentage}% of range) ---`);
-      } else {
-        console.log(`\n--- Campaign ${i + 1}/${totalToProcess} (${percentage}%) ---`);
-      }
-      
-      console.log(`ID: ${campaign.id} | URL: ${campaign.link}`);
-
-      try {
-        if (!campaign.link) {
-          throw new Error('Invalid or empty URL');
+    const stats = { success: 0, notFound: 0, failed: 0, skipped: 0 };
+    
+    // Initialize a single browser instance
+    const browser = await puppeteer.launch(BROWSER_CONFIG);
+    
+    try {
+      for (let i = 0; i < campaignsToProcess.length; i++) {
+        if (isShuttingDown) {
+          console.log('🛑 Shutdown requested, stopping gracefully...');
+          break;
         }
-
-        // Replace the GoFundMe check with a site type check
-        const siteType = detectSiteType(campaign.link);
-        if (!siteType) {
-          skippedCount++;
-          console.log(`⏭️ Skipped: Not a supported platform URL`);
-          continue;
-        }
-
-        console.log(`⏳ Processing...`);
-
-        const result = await scrapeCampaign(campaign).catch(error => {
-          throw new Error(`Scraping failed: ${error.message}`);
-        });
         
-        if (result) {
-          successCount++;
-          console.log(`✅ Success: Data updated`);
-        } else {
-          if (campaign.link.includes('Not found')) {
-            notFoundCount++;
-            console.log(`⚠️ Warning: Campaign not found`);
-          } else {
-            failedCount++;
-            console.log(`❌ Error: Failed to process campaign`);
-          }
-        }
-
-      } catch (error) {
-        failedCount++;
-        console.log(`❌ Error: ${error.message}`);
+        const campaign = campaignsToProcess[i];
+        const current = i + 1;
         
-        // Additional error details if available
-        if (error.stack) {
-          console.log(`   Stack trace: ${error.stack.split('\n')[1].trim()}`);
-        }
-        if (error.cause) {
-          console.log(`   Cause: ${error.cause}`);
+        await processCampaign(campaign, current, totalToProcess, stats, browser);
+        
+        // Periodic cleanup
+        if (i % 10 === 0) { // Every 10 campaigns
+          cleanupMemory();
         }
       }
-
-      // Add a small delay between processing
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      
+      // Display final summary
+      console.log('\n' + '='.repeat(50));
+      console.log('📊 Final Summary');
+      console.log('='.repeat(50));
+      console.log(`✅ Successful: ${stats.success}`);
+      console.log(`⚠️ Not Found: ${stats.notFound}`);
+      console.log(`❌ Failed: ${stats.failed}`);
+      console.log(`⏭️ Skipped: ${stats.skipped}`);
+      console.log('='.repeat(50) + '\n');
+      
+    } finally {
+      await browser.close();
     }
-
-    // Final summary (appended at the end)
-    console.log('\n' + '='.repeat(50));
-    console.log('📊 Final Summary');
-    console.log('='.repeat(50));
-    console.log(`✅ Successful: ${successCount}`);
-    console.log(`⚠️ Not Found: ${notFoundCount}`);
-    console.log(`❌ Failed: ${failedCount}`);
-    console.log(`⏭️ Skipped: ${skippedCount}`);
-    console.log('='.repeat(50) + '\n');
-
+    
   } catch (error) {
-    console.error('\n❌ Fatal Error:', error.message);
-    if (error.stack) {
-      console.error('Stack trace:', error.stack);
+    console.error('\n❌ Fatal Error:', error);
+  }
+}
+
+// Update the campaign processing function to use the shared browser instance
+async function processCampaign(campaign, current, total, stats, browser) {
+  const percentage = Math.round((current / total) * 100);
+  console.log(`\n--- Campaign ${current}/${total} (${percentage}%) ---`);
+  console.log(`ID: ${campaign.id} | URL: ${campaign.link}`);
+
+  try {
+    if (!campaign.link) throw new Error('Invalid or empty URL');
+
+    const siteType = detectSiteType(campaign.link);
+    if (!siteType) {
+      stats.skipped++;
+      console.log(`⏭️ Skipped: Not a supported platform URL`);
+      return;
     }
+
+    await rateLimiter();
+    console.log(`⏳ Processing...`);
+
+    // Update scrapeCampaign to use the shared browser instance
+    const result = await scrapeCampaign(campaign, browser);
+    
+    if (result) {
+      stats.success++;
+      console.log(`✅ Success: Data updated`);
+    } else {
+      if (campaign.link.includes('Not found')) {
+        stats.notFound++;
+        console.log(`⚠️ Warning: Campaign not found`);
+      } else {
+        stats.failed++;
+        console.log(`❌ Error: Failed to process campaign`);
+      }
+    }
+  } catch (error) {
+    stats.failed++;
+    console.log(`❌ Error: ${error.message}`);
   }
 }
 
