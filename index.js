@@ -6,6 +6,7 @@ import { dirname } from 'path';
 import cliProgress from 'cli-progress';
 import figlet from 'figlet';
 import rateLimit from 'express-rate-limit';
+import axios from 'axios';
 
 // Configure dotenv
 dotenv.config();
@@ -427,17 +428,77 @@ const waitForAnimation = async (page, selector, timeout = 5000) => {
   return false; // Timeout reached
 };
 
-// Add a helper function to parse GoFundMe supporters
+// Helper function to parse GoFundMe supporters
 const parseGoFundMeSupporters = (text) => {
   if (!text) return null;
-  
-  // Match the number before "donations"
-  const match = text.match(/(\d+)\s*donations/);
+
+  // Match the number and check for K/k suffix
+  const match = text.match(/([\d,.]+)(K|k)?\s*donations/i);
   if (match) {
-    return match[1];
+    // Remove commas and convert to float
+    const number = parseFloat(match[1].replace(/,/g, ''));
+    // Check if K/k suffix exists
+    const hasKSuffix = match[2]?.toLowerCase() === 'k';
+    
+    // Return the appropriate number
+    return hasKSuffix ? Math.round(number * 1000) : Math.round(number);
   }
   return null;
 };
+
+// Function to extract the project ID from a Chuffed URL
+function extractChuffedId(url) {
+  const match = url.match(/chuffed\.org\/project\/(\d+)/);
+  return match ? match[1] : null;
+}
+
+// Function to fetch data from the Chuffed API
+async function fetchChuffedData(projectId) {
+  try {
+    const response = await axios.post('https://chuffed.org/api/graphql', [{
+      operationName: 'getCampaign',
+      variables: { id: parseInt(projectId) },
+      query: `query getCampaign($id: ID!) {
+        campaign(id: $id) {
+          id
+          collected {
+            amount
+            __typename
+          }
+          donations {
+            totalCount
+            __typename
+          }
+          target {
+            amount
+            currency
+            currencyNode {
+              symbol
+              __typename
+            }
+            __typename
+          }
+          title
+          __typename
+        }
+      }`
+    }], {
+      headers: {
+        'accept': 'application/json',
+        'content-type': 'application/json',
+      }
+    });
+
+    if (!response.data || !response.data[0]?.data) {
+      throw new Error('Invalid response structure from Chuffed API');
+    }
+
+    return response.data[0]?.data;
+  } catch (error) {
+    console.error(`❌ Error fetching data from Chuffed API: ${error.message}`);
+    return null;
+  }
+}
 
 // Main scraping function
 async function scrapeCampaign(row) {
@@ -451,182 +512,174 @@ async function scrapeCampaign(row) {
 
     const siteType = detectSiteType(row.link);
     if (!siteType) {
+      console.log(`⏭️ Skipped: Unsupported platform URL`);
       return false;
     }
 
-    browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-extensions',
-        '--disable-audio',
-        '--disable-notifications',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-ipc-flooding-protection'
-      ]
-    });
-
-    const page = await browser.newPage();
-    
-    await page.setRequestInterception(true);
-    page.on('request', (request) => {
-      const resourceType = request.resourceType();
-      if (['document', 'script', 'xhr', 'fetch'].includes(resourceType)) {
-        request.continue();
-      } else {
-        request.abort();
+    if (siteType === SITE_TYPES.CHUFFED) {
+      const projectId = extractChuffedId(row.link);
+      if (!projectId) {
+        throw new Error('Failed to extract project ID from URL');
       }
-    });
 
-    await page.setViewport({ width: 800, height: 600 });
-    await page.setCacheEnabled(false);
+      const chuffedData = await fetchChuffedData(projectId);
+      if (!chuffedData) {
+        throw new Error('Failed to fetch data from Chuffed API');
+      }
 
-    // Add timeout and error handling for page load
-    try {
-      await retry(async () => {
-        await page.goto(row.link, {
-          waitUntil: 'networkidle0', // Ensure dynamic content loads
-          timeout: 30000 // Increased timeout for Chuffed
-        });
+      // Convert cents to whole currency units by dividing by 100
+      const totalSupporters = chuffedData?.campaign?.donations?.totalCount || 'Not found';
+      const totalRaised = chuffedData?.campaign?.collected?.amount 
+        ? Math.floor(parseInt(chuffedData.campaign.collected.amount) / 100)
+        : 'Not found';
+      const currency = chuffedData?.campaign?.target?.currencyNode?.symbol || 'Not found';
+      const targetAmount = chuffedData?.campaign?.target?.amount 
+        ? Math.floor(parseInt(chuffedData.campaign.target.amount) / 100)
+        : 'Not found';
+
+      console.log(`✅ Chuffed Data Extracted: Raised ${currency}${totalRaised}, Donations: ${totalSupporters}, Target: ${currency}${targetAmount}`);
+
+      const updated = await updateCampaignData(
+        row.id,
+        targetAmount === 'Not found' ? null : targetAmount,
+        totalRaised === 'Not found' ? null : totalRaised,
+        chuffedData?.campaign?.title || null,
+        currency === 'Not found' ? null : currency
+      );
+
+      if (!updated) {
+        throw new Error('Database update failed - no changes were made');
+      }
+
+      return true;
+    }
+
+    // Handle GoFundMe via scraping
+    if (siteType === SITE_TYPES.GOFUNDME) {
+      browser = await puppeteer.launch({
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--disable-extensions',
+          '--disable-audio',
+          '--disable-notifications',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-ipc-flooding-protection'
+        ]
       });
-    } catch (error) {
-      throw new Error(`Failed to load page after retries: ${error.message}`);
-    }
 
-    const selectors = SELECTORS[siteType];
-
-    // Check each element individually with detailed error reporting
-    const elementPresence = {};
-    for (const [key, selector] of Object.entries(selectors)) {
-      try {
-        await page.waitForSelector(selector, { 
-          timeout: 10000,
-          visible: true // Ensure element is visible
-        });
-        elementPresence[key] = true;
-      } catch (error) {
-        elementPresence[key] = false;
-        console.log(`⚠️ Warning: ${key} element not found (${selector})`);
-      }
-    }
-
-    // If no elements were found, throw error
-    if (!Object.values(elementPresence).some(present => present)) {
-      throw new Error('No required elements found on page');
-    }
-
-    const data = await page.evaluate((selectors, siteType, SITE_TYPES) => {
-      const getData = (selector) => {
-        const element = document.querySelector(selector);
-        return {
-          exists: !!element,
-          text: element?.textContent?.trim() || null,
-          html: element?.innerHTML?.trim() || null
-        };
-      };
-
-      const title = getData(selectors.title);
-      const raised = getData(selectors.raised);
-      const goal = getData(selectors.goal);
-      const supporters = getData(selectors.supporters);
-
-      return {
-        title: title.text,
-        goalText: goal.text,
-        raisedText: raised.html || raised.text,
-        supportersCount: siteType === SITE_TYPES.GOFUNDME ? 
-          supporters.text : // For GoFundMe, get full text to parse later
-          supporters?.text?.match(/\d+/)?.[0] || null, // For Chuffed, get just the number
-        elementStatus: {
-          title: title.exists,
-          raised: raised.exists,
-          goal: goal.exists,
-          supporters: supporters?.exists
+      const page = await browser.newPage();
+      
+      await page.setRequestInterception(true);
+      page.on('request', (request) => {
+        const resourceType = request.resourceType();
+        if (['document', 'script', 'xhr', 'fetch'].includes(resourceType)) {
+          request.continue();
+        } else {
+          request.abort();
         }
-      };
-    }, selectors, siteType, SITE_TYPES);
+      });
 
-    // Parse amounts based on site type
-    const raisedData = siteType === SITE_TYPES.CHUFFED ? 
-      parseChuffedAmount(data.raisedText) : 
-      parseRaisedAmount(data.raisedText);
-    
-    const targetData = siteType === SITE_TYPES.CHUFFED ? 
-      parseChuffedAmount(data.goalText) : 
-      parseTargetAmount(data.goalText);
+      await page.setViewport({ width: 800, height: 600 });
+      await page.setCacheEnabled(false);
 
-    // Validate scraped data
-    if (!data.elementStatus.title && !data.elementStatus.raised && !data.elementStatus.goal) {
-      throw new Error('Failed to extract any data from page elements');
+      try {
+        await retry(async () => {
+          await page.goto(row.link, {
+            waitUntil: 'networkidle0',
+            timeout: 30000
+          });
+        });
+      } catch (error) {
+        throw new Error(`Failed to load page after retries: ${error.message}`);
+      }
+
+      const selectors = SELECTORS[siteType];
+
+      // Check each element individually
+      const elementPresence = {};
+      for (const [key, selector] of Object.entries(selectors)) {
+        try {
+          await page.waitForSelector(selector, { 
+            timeout: 10000,
+            visible: true
+          });
+          elementPresence[key] = true;
+        } catch (error) {
+          elementPresence[key] = false;
+          console.log(`⚠️ Warning: ${key} element not found (${selector})`);
+        }
+      }
+
+      if (!Object.values(elementPresence).some(present => present)) {
+        throw new Error('No required elements found on page');
+      }
+
+      const data = await page.evaluate((selectors, siteType, SITE_TYPES) => {
+        const getData = (selector) => {
+          const element = document.querySelector(selector);
+          return {
+            exists: !!element,
+            text: element?.textContent?.trim() || null,
+            html: element?.innerHTML?.trim() || null
+          };
+        };
+
+        const title = getData(selectors.title);
+        const raised = getData(selectors.raised);
+        const goal = getData(selectors.goal);
+        const supporters = getData(selectors.supporters);
+
+        return {
+          title: title.text,
+          goalText: goal.text,
+          raisedText: raised.html || raised.text,
+          supportersCount: supporters.text,
+          elementStatus: {
+            title: title.exists,
+            raised: raised.exists,
+            goal: goal.exists,
+            supporters: supporters?.exists
+          }
+        };
+      }, selectors, siteType, SITE_TYPES);
+
+      const raisedData = parseRaisedAmount(data.raisedText);
+      const targetData = parseTargetAmount(data.goalText);
+      const supportersCount = parseGoFundMeSupporters(data.supportersCount);
+
+      console.log(' Extracted Data:');
+      console.log(`   Title: ${data.title || 'Not found'}`);
+      console.log(`   Goal: ${targetData.amount} ${targetData.currency}`);
+      console.log(`   Raised: ${raisedData.amount} ${raisedData.currency}`);
+      console.log(`   Donations: ${supportersCount || 'Not found'}`);
+
+      const updated = await updateCampaignData(
+        row.id,
+        targetData.amount === 'Not found' ? null : targetData.amount,
+        raisedData.amount === 'Not found' ? null : raisedData.amount,
+        data.title,
+        raisedData.currency === 'Not found' ? null : raisedData.currency
+      );
+
+      if (!updated) {
+        throw new Error('Database update failed - no changes were made');
+      }
+
+      return true;
     }
 
-    // Log warnings for missing data
-    if (!data.title) console.log('⚠️ Warning: Campaign title is missing');
-    if (!data.raisedText) console.log('⚠️ Warning: Raised amount is missing');
-    if (!data.goalText) console.log('⚠️ Warning: Goal amount is missing');
-
-    const processedData = {
-      title: data.title || null,
-      goalAmount: targetData.raw,
-      goalAmountNormalized: targetData.amount === 'Not found' ? null : targetData.amount,
-      goalCurrency: targetData.currency === 'Not found' ? null : targetData.currency,
-      raisedAmount: raisedData.raw,
-      raisedAmountNormalized: raisedData.amount === 'Not found' ? null : raisedData.amount,
-      raisedCurrency: raisedData.currency === 'Not found' ? null : raisedData.currency,
-      supportersCount: siteType === SITE_TYPES.GOFUNDME ? 
-        parseGoFundMeSupporters(data.supportersCount) : 
-        data.supportersCount
-    };
-
-    // Log warnings for mismatched currencies
-    if (processedData.goalCurrency && processedData.raisedCurrency && 
-        processedData.goalCurrency !== processedData.raisedCurrency) {
-      console.log(`⚠️ Warning: Currency mismatch - Goal: ${processedData.goalCurrency}, Raised: ${processedData.raisedCurrency}`);
-    }
-
-    // Log successful data extraction
-    console.log(' Extracted Data:');
-    console.log(`   Title: ${processedData.title || 'Not found'}`);
-    console.log(`   Goal: ${processedData.goalAmountNormalized ? 
-      `${CURRENCY_SYMBOLS[processedData.goalCurrency] || processedData.goalCurrency || ''}${processedData.goalAmountNormalized} (Raw: ${processedData.goalAmount})` : 
-      'Not found'}`);
-    console.log(`   Raised: ${processedData.raisedAmountNormalized ? 
-      `${CURRENCY_SYMBOLS[processedData.raisedCurrency] || processedData.raisedCurrency || ''}${processedData.raisedAmountNormalized} (Raw: ${processedData.raisedAmount})` : 
-      'Not found'}`);
-    console.log(`   Supporters: ${processedData.supportersCount || 'Not found'}`);
-
-    // Attempt database update
-    const updated = await updateCampaignData(
-      row.id,
-      processedData.goalAmountNormalized,
-      processedData.raisedAmountNormalized,
-      processedData.title,
-      processedData.raisedCurrency
-    );
-
-    if (!updated) {
-      throw new Error('Database update failed - no changes were made');
-    }
-
-    await page.evaluate(() => {
-      window.gc && window.gc();
-    });
-
-    return true;
   } catch (error) {
-    console.log(`❌ Error: ${error.message}`);
-    if (error.stack) {
-      console.log(`   Stack: ${error.stack.split('\n')[1].trim()}`);
-    }
+    console.error(`❌ Error processing campaign: ${error.message}`);
     return false;
   } finally {
     if (browser) {
       await browser.close().catch(err => 
-        console.log(`⚠️ Warning: Browser cleanup failed - ${err.message}`)
+        console.error(`⚠️ Warning: Browser cleanup failed - ${err.message}`)
       );
     }
   }
