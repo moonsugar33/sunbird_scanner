@@ -1004,12 +1004,8 @@ const failedScans = {
 
 // Add near other helper functions
 const timingData = {
-  startTime: null,
+  startTime: Date.now(),
   campaignTimes: [],
-  
-  start() {
-    this.startTime = Date.now();
-  },
   
   recordCampaignTime(id, duration) {
     this.campaignTimes.push({ id, duration });
@@ -1021,15 +1017,19 @@ const timingData = {
       ? this.campaignTimes.reduce((acc, curr) => acc + curr.duration, 0) / this.campaignTimes.length 
       : 0;
     
+    const formatDuration = (ms) => {
+      const minutes = Math.floor(ms / 60000);
+      const seconds = ((ms % 60000) / 1000).toFixed(2);
+      return minutes > 0 
+        ? `${minutes}m ${seconds}s`
+        : `${seconds}s`;
+    };
+    
     return {
-      totalRuntime: `${(totalDuration / 1000 / 60).toFixed(2)} minutes`,
-      averagePerCampaign: `${(avgDuration / 1000).toFixed(2)} seconds`,
-      slowestCampaign: this.campaignTimes.length > 0 
-        ? Math.max(...this.campaignTimes.map(t => t.duration)) / 1000 
-        : 0,
-      fastestCampaign: this.campaignTimes.length > 0 
-        ? Math.min(...this.campaignTimes.map(t => t.duration)) / 1000 
-        : 0
+      totalRuntime: formatDuration(totalDuration),
+      averagePerCampaign: formatDuration(avgDuration),
+      fastestCampaign: formatDuration(Math.min(...this.campaignTimes.map(t => t.duration))),
+      slowestCampaign: formatDuration(Math.max(...this.campaignTimes.map(t => t.duration)))
     };
   }
 };
