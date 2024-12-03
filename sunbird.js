@@ -7,6 +7,7 @@ import cliProgress from 'cli-progress';
 import figlet from 'figlet';
 import rateLimit from 'express-rate-limit';
 import axios from 'axios';
+import fs from 'fs';
 
 // Configure dotenv
 dotenv.config();
@@ -851,6 +852,20 @@ async function processAllCampaigns() {
       console.log(`⚠️ Not Found: ${stats.notFound}`);
       console.log(`❌ Failed: ${stats.failed}`);
       console.log(`⏭️ Skipped: ${stats.skipped}`);
+      
+      // Add timing summary
+      const timing = timingData.getSummary();
+      console.log('\n⏱️ Timing Summary');
+      console.log(`Total Runtime: ${timing.totalRuntime}`);
+      console.log(`Average Per Campaign: ${timing.averagePerCampaign}`);
+      console.log(`Fastest Scan: ${timing.fastestCampaign}s`);
+      console.log(`Slowest Scan: ${timing.slowestCampaign}s`);
+      
+      // Add failed scans report
+      if (failedScans.items.length > 0) {
+        console.log(failedScans.generateReport());
+      }
+      
       console.log('='.repeat(50) + '\n');
       
     } finally {
@@ -894,21 +909,21 @@ async function processCampaign(campaign, current, total, stats, browser) {
         console.log(`⚠️ Warning: Campaign not found`);
       } else {
         stats.failed++;
-        failedCampaigns.push({
-          id: campaign.id,
-          url: campaign.link,
-          reason: 'Processing failed'
-        });
+        failedScans.add(
+          campaign.id,
+          campaign.link,
+          'Processing failed'
+        );
         console.log(`❌ Error: Failed to process campaign`);
       }
     }
   } catch (error) {
     stats.failed++;
-    failedCampaigns.push({
-      id: campaign.id,
-      url: campaign.link,
-      reason: error.message
-    });
+    failedScans.add(
+      campaign.id,
+      campaign.link,
+      error.message
+    );
     console.log(`❌ Error: ${error.message}`);
   } finally {
     const duration = Date.now() - campaignStartTime;
@@ -955,7 +970,39 @@ function cleanupMemory() {
 await cleanupMemory();
 
 // Add near the top with other constants and global variables
-const failedCampaigns = [];
+const failedScans = {
+  items: [],
+  
+  add(id, url, reason, timestamp = new Date().toISOString()) {
+    this.items.push({ id, url, reason, timestamp });
+  },
+  
+  generateReport() {
+    if (this.items.length === 0) return '';
+    
+    const report = [
+      '\n Failed Scans Report',
+      '='.repeat(50),
+      `Total Failed: ${this.items.length}`,
+      '\nDetailed Breakdown:',
+      ...this.items.map(item => (
+        `- ID: ${item.id}\n  URL: ${item.url}\n  Reason: ${item.reason}\n  Time: ${item.timestamp}`
+      )),
+      '='.repeat(50),
+    ].join('\n');
+    
+    // Also save to file
+    try {
+      const fileName = `failed_scans_${new Date().toISOString().split('T')[0]}.txt`;
+      fs.writeFileSync(fileName, report);
+      return `${report}\n\nReport saved to: ${fileName}`;
+    } catch (error) {
+      return `${report}\n\nFailed to save report: ${error.message}`;
+    }
+  }
+};
+
+// Add near other helper functions
 const timingData = {
   startTime: null,
   campaignTimes: [],
