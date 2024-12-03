@@ -133,7 +133,7 @@ node run.js
 
  - [Script made by Sneethan](https://sneethan.xyz)
  - [Databases made by Supabase](https://supabase.com/)
- - [Moral "support" by soft-sunbird](https://soft-sunbird.tumblr.com/) 
+ - [Moral support by soft-sunbird](https://soft-sunbird.tumblr.com/) 
 
 ## Disclaimers
 
