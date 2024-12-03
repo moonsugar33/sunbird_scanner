@@ -101,21 +101,19 @@ async function main() {
   log.info('Starting archiving process...');
   
   try {
-    // Update main constants
-    const BATCH_SIZE = 3;        // Reduced from 5 to better handle rate limits
-    const CONCURRENT_REQUESTS = 2; // Reduced from 3 to stay under 15 RPM
-    const PAGE_SIZE = 50;        // Reduced from 100 to manage memory and rate limits better
     let processedCount = 0;
+    let lastProcessedId = 0;  // Track the last ID we processed
     let hasMore = true;
 
     while (hasMore) {
-      // Fetch next page of URLs
+      // Fetch next batch of URLs using ID as cursor
       const { data: urls, error } = await supabase
         .from('gv-links')
         .select('id, link, archived_at')
         .is('archived_at', null)
+        .gt('id', lastProcessedId)  // Get records after our last processed ID
         .order('id', { ascending: true })
-        .range(processedCount, processedCount + PAGE_SIZE - 1);
+        .limit(100);  // Fetch more records at once to reduce DB calls
 
       if (error) throw error;
       if (!urls?.length) {
@@ -124,61 +122,53 @@ async function main() {
         break;
       }
 
-      log.info(`Processing URLs ${processedCount + 1} to ${processedCount + urls.length}`);
+      log.info(`Found ${urls.length} URLs to process, starting from ID ${lastProcessedId + 1}`);
 
-      // Process URLs in batches
-      for (let i = 0; i < urls.length; i += BATCH_SIZE) {
-        const batch = urls.slice(i, i + BATCH_SIZE);
-        const promises = batch.map(async (urlRecord) => {
-          log.progress(processedCount + i + batch.indexOf(urlRecord) + 1, processedCount + urls.length, urlRecord.link);
+      // Process URLs one at a time
+      for (const urlRecord of urls) {
+        log.info(`[${processedCount + 1}] Processing URL: ${urlRecord.link}`);
+        log.info(`Current rate limit delay: ${RATE_LIMITS.currentDelay}ms`, true);
 
-          let archiveUrl = null;
-          for (let attempt = 1; attempt <= 3; attempt++) {
-            if (attempt > 1) {
-              const retryDelay = RATE_LIMITS.currentDelay * attempt;
-              log.info(`Waiting ${retryDelay}ms before retry ${attempt} (Current rate limit: ${RATE_LIMITS.currentDelay}ms)`, true);
-              await new Promise(resolve => setTimeout(resolve, retryDelay));
-            }
-
-            archiveUrl = await archiveLink(urlRecord.link, attempt);
-            if (archiveUrl) break;
+        let archiveUrl = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          if (attempt > 1) {
+            const retryDelay = RATE_LIMITS.currentDelay * attempt;
+            log.info(`Waiting ${retryDelay}ms before retry ${attempt}`);
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
           }
 
-          if (archiveUrl) {
-            return supabase
-              .from('gv-links')
-              .update({
-                archived_at: new Date().toISOString(),
-                archive_url: archiveUrl,
-                last_checked: new Date().toISOString(),
-              })
-              .eq('id', urlRecord.id);
-          }
-        });
+          archiveUrl = await archiveLink(urlRecord.link, attempt);
+          if (archiveUrl) break;
+        }
 
-        // Process batch with concurrency limit
-        await Promise.all(
-          promises.reduce((acc, promise, index) => {
-            const batch = Math.floor(index / CONCURRENT_REQUESTS);
-            if (!acc[batch]) acc[batch] = [];
-            acc[batch].push(promise);
-            return acc;
-          }, []).map(batch => Promise.all(batch))
-        );
+        if (archiveUrl) {
+          log.success(`Successfully archived: ${urlRecord.link} -> ${archiveUrl}`);
+          await supabase
+            .from('gv-links')
+            .update({
+              archived_at: new Date().toISOString(),
+              archive_url: archiveUrl,
+              last_checked: new Date().toISOString(),
+            })
+            .eq('id', urlRecord.id);
+        } else {
+          log.error(`Failed to archive after 3 attempts: ${urlRecord.link}`);
+        }
 
-        // Dynamic delay between batches based on current rate limit state
-        const batchDelay = RATE_LIMITS.currentDelay;
-        log.info(`Waiting ${batchDelay}ms between batches`, true);
-        await new Promise(resolve => setTimeout(resolve, batchDelay));
+        // Always wait between requests to respect rate limit
+        log.info(`Waiting ${RATE_LIMITS.currentDelay}ms before next request`);
+        await new Promise(resolve => setTimeout(resolve, RATE_LIMITS.currentDelay));
+
+        lastProcessedId = urlRecord.id;  // Update the last processed ID
+        processedCount++;
       }
 
-      processedCount += urls.length;
-      hasMore = urls.length === PAGE_SIZE;
+      hasMore = urls.length === 100;  // Check if we might have more records
 
-      // Adaptive delay between pages based on rate limit state
-      const pageDelay = Math.max(2000, RATE_LIMITS.currentDelay);
-      log.info(`Waiting ${pageDelay}ms between pages`, true);
-      await new Promise(resolve => setTimeout(resolve, pageDelay));
+      // Additional delay between batches
+      const batchDelay = Math.max(5000, RATE_LIMITS.currentDelay);
+      log.info(`Waiting ${batchDelay}ms between batches`);
+      await new Promise(resolve => setTimeout(resolve, batchDelay));
     }
 
     log.success(`Archiving process completed. Processed ${processedCount} URLs total.`);
