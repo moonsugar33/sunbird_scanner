@@ -118,11 +118,7 @@ Supabase is a service that provides a database and API for your project.
 
 1. In your Supabase dashboard, go to **Settings** > **API**.
 2. Copy the **`Project URL`** and **`Anon Key`**.
-3. Save these values in your project’s `.env` file:
-   ```env
-   SUPABASE_URL=your-project-url
-   SUPABASE_ANON_KEY=your-anon-key
-   ```
+3. Leave this page open, and paste the values into your terminal when requested. ``run.js`` will ask for them automatically.
 
 ---
 
