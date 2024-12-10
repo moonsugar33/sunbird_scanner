@@ -2,7 +2,7 @@ import inquirer from 'inquirer';
 import { spawn } from 'child_process';
 import figlet from 'figlet';
 import { fileURLToPath } from 'url';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { exec } from 'child_process';
@@ -14,6 +14,9 @@ const execAsync = promisify(exec);
 // Get current file's directory (needed for ES modules)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// Use path.join for cross-platform path handling
+const CONFIG_PATH = join(__dirname, '.env');
 
 // ASCII Logo display function
 function displayLogo() {

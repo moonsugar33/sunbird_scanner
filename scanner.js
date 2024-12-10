@@ -81,11 +81,13 @@ const SHARED_CONFIG = {
       '--disable-notifications',
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
-      '--disable-ipc-flooding-protection'
+      '--disable-ipc-flooding-protection',
+      ...(process.platform === 'linux' ? ['--no-zygote', '--single-process'] : [])
     ],
     defaultViewport: { width: 800, height: 600 },
     ignoreHTTPSErrors: true,
-    waitForInitialPage: false
+    waitForInitialPage: false,
+    executablePath: process.platform === 'linux' ? '/usr/bin/chromium-browser' : undefined
   },
   RATE_LIMIT: {
     requestsPerMinute: 30,
@@ -769,7 +771,7 @@ class FundraisingScanner {
     console.log(`❌ Failed: ${this.metrics.failureCount}`);
     console.log(`⏭️ Skipped: ${this.metrics.skippedCount}`);
     console.log(`⚠️ Not Found: ${this.metrics.notFoundCount}`);
-    console.log(`⏱️ Total Runtime: ${minutes}m ${seconds}s`);
+    console.log(`���️ Total Runtime: ${minutes}m ${seconds}s`);
     
     if (this.failedScans.items.length > 0) {
       console.log(this.generateFailedScansReport());
