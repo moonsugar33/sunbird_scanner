@@ -45,7 +45,7 @@ async function archiveLink(url, attempt = 1) {
     new URL(url);
     log.info(`Attempt ${attempt}: Archiving URL`, true);
     
-    const response = await fetch(`https://web.archive.org/save/${url}`, {
+    const response = await fetch(`https://web.archive.org/save/${url}?capture_outlinks=1`, {
       method: 'GET',
       headers: {
         'Authorization': `LOW ${process.env.ARCHIVE_KEY}`,
