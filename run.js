@@ -7,6 +7,7 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { FundraisingScanner, SCANNER_CONFIGS } from './scanner.js';
 
 const execAsync = promisify(exec);
 
@@ -47,12 +48,12 @@ const envQuestions = [
 const questions = [
     {
         type: 'list',
-        name: 'script',
-        message: 'Which script would you like to run?',
-        choices: [
-            { name: '1. GazaVetters index', value: 'index' },
-            { name: "2. soft-sunbird's index", value: 'sunbird' }
-        ]
+        name: 'scannerType',
+        message: 'Which scanner would you like to run?',
+        choices: Object.entries(SCANNER_CONFIGS).map(([key, config]) => ({
+            name: config.displayName,
+            value: key
+        }))
     },
     {
         type: 'confirm',
@@ -126,42 +127,18 @@ async function main() {
     displayLogo();
     
     try {
-        // Check and install dependencies first
         await checkAndInstallDependencies();
-        
-        // Check and create .env file if needed
         await checkAndCreateEnvFile();
         
         const answers = await inquirer.prompt(questions);
         
-        const script = answers.script === 'index' ? 'index.js' : 'Sunbird.js';
-        const args = [];
+        // Initialize the selected scanner
+        const scanner = new FundraisingScanner(answers.scannerType);
         
-        if (answers.useRange) {
-            // Convert user's 1-based input to 0-based index for start
-            const startIndex = parseInt(answers.startRange) - 1;
-            // Keep endIndex as-is since slice is exclusive
-            const endIndex = parseInt(answers.endRange);
-            
-            if (isNaN(startIndex) || isNaN(endIndex)) {
-                throw new Error('Invalid range values provided');
-            }
-            
-            args.push('--start', startIndex.toString(), '--end', endIndex.toString());
-        }        
-        
-        const child = spawn('node', [script, ...args], {
-            stdio: 'inherit'
-        });
-
-        child.on('error', (error) => {
-            console.error(`Error: ${error.message}`);
-        });
-
-        child.on('exit', (code) => {
-            if (code !== 0) {
-                console.log(`Process exited with code ${code}`);
-            }
+        // Run the scanner with any specified range
+        await scanner.run({
+            startIndex: answers.useRange ? parseInt(answers.startRange) : 1,
+            endIndex: answers.useRange ? parseInt(answers.endRange) : null
         });
         
     } catch (error) {
