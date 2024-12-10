@@ -97,6 +97,13 @@ const SHARED_CONFIG = {
     'NetworkError': { retries: 3, delay: 3000 },
     'ElementsNotFound': { retries: 3, delay: 2000 },
     'default': { retries: 2, delay: 2000 }
+  },
+  INTERNET_ARCHIVE: {
+    enabled: true,
+    headers: {
+      'x-capture-outlinks': '1',
+      'User-Agent': 'Mozilla/5.0 (compatible; SunbirdScanner/1.0; +https://github.com/yourusername/sunbird_scanner)'
+    }
   }
 };
 
@@ -475,16 +482,17 @@ class FundraisingScanner {
 
   async fetchChuffedData(projectId) {
     try {
+      const headers = {
+        'accept': 'application/json',
+        'content-type': 'application/json',
+        ...(SHARED_CONFIG.INTERNET_ARCHIVE.enabled ? SHARED_CONFIG.INTERNET_ARCHIVE.headers : {})
+      };
+
       const response = await axios.post(SITE_CONFIGS.CHUFFED.api.endpoint, [{
         operationName: 'getCampaign',
         variables: { id: parseInt(projectId) },
         query: SITE_CONFIGS.CHUFFED.api.query
-      }], {
-        headers: {
-          'accept': 'application/json',
-          'content-type': 'application/json',
-        }
-      });
+      }], { headers });
 
       if (!response.data || !response.data[0]?.data) {
         throw new Error('Invalid response structure from Chuffed API');
@@ -550,6 +558,11 @@ class FundraisingScanner {
     
     try {
       page = await browser.newPage();
+      
+      // Set Internet Archive headers if enabled
+      if (SHARED_CONFIG.INTERNET_ARCHIVE.enabled) {
+        await page.setExtraHTTPHeaders(SHARED_CONFIG.INTERNET_ARCHIVE.headers);
+      }
       
       // Initial page load with retries
       await this.retry(async () => {

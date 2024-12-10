@@ -45,11 +45,12 @@ async function archiveLink(url, attempt = 1) {
     new URL(url);
     log.info(`Attempt ${attempt}: Archiving URL`, true);
     
-    const response = await fetch(`https://web.archive.org/save/${url}?capture_outlinks=0`, {
+    const response = await fetch(`https://web.archive.org/save/${url}`, {
       method: 'GET',
       headers: {
         'Authorization': `LOW ${process.env.ARCHIVE_KEY}`,
         'User-Agent': 'ArchiveBot/1.0',
+        'Capture-Outlinks': 'false'
       },
       timeout: 30000,
     });
@@ -105,7 +106,6 @@ async function main() {
     const { data: urls, error } = await supabase
       .from('gv-links')
       .select('id, link, archived_at')
-      .is('archived_at', null)
       .order('id', { ascending: true });
 
     if (error) throw error;
