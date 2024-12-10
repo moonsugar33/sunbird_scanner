@@ -268,8 +268,74 @@ class FundraisingScanner {
     }
   }
 
+  async shortenUrl(url) {
+    try {
+      console.log('🔗 Attempting to shorten URL...');
+      
+      const options = {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'insomnia/2023.5.8',
+          Accept: 'application/json',
+          Authorization: `Bearer ${process.env.SHORTENER_BEARER_TOKEN}`
+        },
+        body: new URLSearchParams({
+          url: url,
+          domain_id: '3',
+          privacy: '1',
+          urls: '',
+          multiple_links: '0',
+          alias: '',
+          space_id: ''
+        })
+      };
+
+      const response = await fetch('https://gazafund.me/api/v1/links', options);
+      const data = await response.json();
+      
+      if (data.status === 200 && data.data?.short_url) {
+        console.log(`✅ URL shortened successfully: ${data.data.short_url}`);
+        return data.data.short_url;
+      } else {
+        console.log('❌ No short URL returned from API');
+        console.log('API Response:', JSON.stringify(data, null, 2));
+        return null;
+      }
+    } catch (error) {
+      console.error(`❌ Error shortening URL: ${error.message}`);
+      return null;
+    }
+  }
+
   async updateCampaignData(id, target, raised, name, currency) {
     try {
+      // First check if we already have a short URL
+      const { data: existing, error: fetchError } = await this.supabase
+        .from(this.config.tableName)
+        .select('short')
+        .eq('id', id)
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      // Only get new short URL if one doesn't exist
+      let shortUrl = existing?.short;
+      if (!shortUrl) {
+        console.log('📎 No existing short URL found, generating new one...');
+        const { data: campaignData } = await this.supabase
+          .from(this.config.tableName)
+          .select('link')
+          .eq('id', id)
+          .single();
+          
+        if (campaignData?.link) {
+          shortUrl = await this.shortenUrl(campaignData.link);
+        }
+      } else {
+        console.log(`ℹ️ Using existing short URL: ${shortUrl}`);
+      }
+
       const { data, error } = await this.supabase
         .from(this.config.tableName)
         .update({
@@ -277,15 +343,24 @@ class FundraisingScanner {
           raised: parseInt(raised) || null,
           title: name || null,
           currency: currency || null,
+          short: shortUrl,
           updated_at: new Date().toISOString()
         })
         .eq('id', id)
         .select();
 
-      if (error) throw error;
+      if (error) {
+        console.error(`❌ Database update error: ${error.message}`);
+        throw error;
+      }
+
+      if (shortUrl) {
+        console.log(`🔗 Short URL saved to database: ${shortUrl}`);
+      }
+
       return data ? true : false;
     } catch (error) {
-      console.error('Database update error:', error);
+      console.error(`❌ Database update error: ${error.message}`);
       return false;
     }
   }

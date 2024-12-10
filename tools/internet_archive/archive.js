@@ -3,6 +3,9 @@ import { createClient } from '@supabase/supabase-js';
 import chalk from 'chalk';
 import url from 'url';
 import fetch from 'node-fetch';
+import inquirer from 'inquirer';
+import fs from 'fs/promises';
+import path from 'path';
 
 dotenv.config();
 
@@ -31,29 +34,177 @@ const log = {
 
 // Adjust rate limit constants for 15 RPM
 const RATE_LIMITS = {
-  baseDelay: 4000,          // Base delay between requests (4s to respect 15 RPM)
-  maxDelay: 60000,          // Maximum delay (60s)
-  backoffFactor: 2,         // More aggressive backoff multiplier
-  successReduceFactor: 0.9, // More conservative reduction (slower ramp-up)
-  currentDelay: 4000,       // Starting delay (4s)
+  baseDelay: 4000,
+  maxDelay: 60000,
+  backoffFactor: 2,
+  successReduceFactor: 0.9,
+  currentDelay: 4000,
+  minDelay: 4000,
   consecutiveFailures: 0,
   consecutiveSuccesses: 0,
+  
+  calculateNextDelay(isSuccess) {
+    if (isSuccess) {
+      this.consecutiveSuccesses++;
+      this.consecutiveFailures = 0;
+      if (this.consecutiveSuccesses > 5) {
+        this.currentDelay = Math.max(
+          this.minDelay,
+          this.currentDelay * this.successReduceFactor
+        );
+      }
+    } else {
+      this.consecutiveFailures++;
+      this.consecutiveSuccesses = 0;
+      this.currentDelay = Math.min(
+        this.currentDelay * this.backoffFactor,
+        this.maxDelay
+      );
+    }
+    return this.currentDelay;
+  }
 };
 
-async function archiveLink(url, attempt = 1) {
+async function checkEnvFile() {
   try {
-    new URL(url);
+    await fs.access('.env');
+    dotenv.config();
+  } catch {
+    console.log(chalk.yellow('No .env file found. Please provide the required values:'));
+    const answers = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'SUPABASE_URL',
+        message: 'Enter your Supabase URL:',
+        validate: input => input.length > 0
+      },
+      {
+        type: 'input',
+        name: 'SUPABASE_ANON_KEY',
+        message: 'Enter your Supabase anonymous key:',
+        validate: input => input.length > 0
+      },
+      {
+        type: 'input',
+        name: 'ARCHIVE_KEY',
+        message: 'Enter your Internet Archive key:',
+        validate: input => input.length > 0
+      }
+    ]);
+
+    const envContent = Object.entries(answers)
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n');
+
+    await fs.writeFile('.env', envContent);
+    dotenv.config();
+  }
+}
+
+async function getConfig() {
+  // First get the table choice to query max ID
+  const { table } = await inquirer.prompt([
+    {
+      type: 'list',
+      name: 'table',
+      message: 'Which table would you like to scan?',
+      choices: ['gv-links', 'sunbird']
+    }
+  ]);
+
+  // Get the maximum ID from the selected table
+  const { data: maxResult } = await supabase
+    .from(table)
+    .select('id')
+    .order('id', { ascending: false })
+    .limit(1);
+
+  const maxId = maxResult?.[0]?.id || 1;
+
+  // Now get the rest of the config
+  const answers = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'startId',
+      message: 'Enter start ID (minimum 1):',
+      default: '1',
+      validate: input => {
+        const num = parseInt(input);
+        if (isNaN(num)) return 'Please enter a valid number';
+        return num >= 1 ? true : 'Please enter a number greater than or equal to 1';
+      },
+      filter: (input) => {
+        const num = parseInt(input);
+        return isNaN(num) ? 1 : num;
+      }
+    },
+    {
+      type: 'input',
+      name: 'endId',
+      message: `Enter end ID (optional, press enter to scan all up to ${maxId}):`,
+      validate: (input, answers) => {
+        if (input === '') return true;
+        const num = parseInt(input);
+        if (isNaN(num)) return 'Please enter a valid number';
+        return num >= answers.startId ? true : 'End ID must be greater than or equal to start ID';
+      },
+      filter: (input) => {
+        if (input === '') return maxId;  // Use maxId instead of null
+        const num = parseInt(input);
+        return isNaN(num) ? maxId : num;
+      }
+    },
+    {
+      type: 'confirm',
+      name: 'captureOutlinks',
+      message: 'Would you like to capture outlinks?',
+      default: false
+    },
+    {
+      type: 'confirm',
+      name: 'skipArchived',
+      message: 'Skip already archived URLs?',
+      default: true
+    }
+  ]);
+  
+  // Convert to 0-based indices for internal use
+  return {
+    table,
+    ...answers,
+    startId: answers.startId - 1,
+    endId: answers.endId - 1
+  };
+}
+
+async function archiveLink(url, attempt = 1, captureOutlinks = false) {
+  try {
+    // Validate URL more robustly
+    const parsedUrl = new URL(url);
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      throw new Error('Invalid URL protocol - must be http or https');
+    }
+    
+    if (!url.trim()) {
+      throw new Error('Empty URL provided');
+    }
+
     log.info(`Attempt ${attempt}: Archiving URL`, true);
     
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+
     const response = await fetch(`https://web.archive.org/save/${url}`, {
       method: 'GET',
       headers: {
         'Authorization': `LOW ${process.env.ARCHIVE_KEY}`,
         'User-Agent': 'ArchiveBot/1.0',
-        'Capture-Outlinks': 'false'
+        'Capture-Outlinks': captureOutlinks.toString()
       },
-      timeout: 30000,
+      signal: controller.signal
     });
+
+    clearTimeout(timeout);
 
     // Handle rate limiting specifically
     if (response.status === 429) {
@@ -93,24 +244,82 @@ async function archiveLink(url, attempt = 1) {
     return archiveUrl;
 
   } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error('Request timed out');
+    }
     log.error(`Archive attempt ${attempt} failed: ${error.message}`, error);
     return null;
   }
 }
 
+async function shortenUrl(url) {
+  try {
+    const options = {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'insomnia/2023.5.8',
+        Accept: 'application/json',
+        Authorization: 'Bearer Vpc0WLNcOX31rAEbIhr7r6dDVIc0oRIi6rq11bAlma6w1rkHmbGhGrGRKiUxyCM8'
+      },
+      body: new URLSearchParams({
+        url: url,
+        domain_id: '3',
+        privacy: '1',
+        urls: '',
+        multiple_links: '0',
+        alias: '',
+        space_id: ''
+      })
+    };
+
+    const response = await fetch('https://gazafund.me/api/v1/links', options);
+    if (!response.ok) {
+      throw new Error(`URL shortening failed with status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    return data.short_url || null;
+  } catch (error) {
+    log.error(`Failed to shorten URL: ${error.message}`);
+    return null;
+  }
+}
+
 async function main() {
+  await checkEnvFile();
+  const config = await getConfig();
   log.info('Starting archiving process...');
   
   try {
-    // Fetch all unarchived URLs in one go
-    const { data: urls, error } = await supabase
-      .from('gv-links')
+    // Build the query based on the range
+    let query = supabase
+      .from(config.table)
       .select('id, link, archived_at')
       .order('id', { ascending: true });
 
-    if (error) throw error;
+    // Only add range filters if we have valid values
+    if (typeof config.startId === 'number' && config.startId >= 0) {
+      query = query.gte('id', config.startId);
+    }
+
+    if (typeof config.endId === 'number' && config.endId >= 0) {
+      query = query.lte('id', config.endId);
+    }
+
+    if (config.skipArchived) {
+      query = query.is('archived_at', null);
+    }
+
+    const { data: urls, error } = await query;
+
+    if (error) {
+      log.error('Database query error:', error);
+      throw error;
+    }
+
     if (!urls?.length) {
-      log.warning('No URLs found to archive');
+      log.warning('No URLs found to archive in the specified range');
       return;
     }
 
@@ -120,6 +329,13 @@ async function main() {
     // Process URLs one at a time
     for (const urlRecord of urls) {
       log.info(`[${processedCount + 1}/${urls.length}] Processing URL: ${urlRecord.link}`);
+      
+      // Try to shorten the URL first
+      const shortUrl = await shortenUrl(urlRecord.link);
+      if (shortUrl) {
+        log.success(`URL shortened: ${shortUrl}`);
+      }
+
       log.info(`Current rate limit delay: ${RATE_LIMITS.currentDelay}ms`, true);
 
       let archiveUrl = null;
@@ -130,20 +346,26 @@ async function main() {
           await new Promise(resolve => setTimeout(resolve, retryDelay));
         }
 
-        archiveUrl = await archiveLink(urlRecord.link, attempt);
+        archiveUrl = await archiveLink(urlRecord.link, attempt, config.captureOutlinks);
         if (archiveUrl) break;
       }
 
       if (archiveUrl) {
         log.success(`Successfully archived: ${urlRecord.link} -> ${archiveUrl}`);
-        await supabase
-          .from('gv-links')
+        const { error: updateError } = await supabase
+          .from(config.table)
           .update({
             archived_at: new Date().toISOString(),
             archive_url: archiveUrl,
             last_checked: new Date().toISOString(),
+            short: shortUrl  // Add the short URL to the update
           })
           .eq('id', urlRecord.id);
+
+        if (updateError) {
+          log.error(`Failed to update database for ${urlRecord.link}:`, updateError);
+          continue;
+        }
       } else {
         log.error(`Failed to archive after 3 attempts: ${urlRecord.link}`);
       }
