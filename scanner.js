@@ -87,7 +87,18 @@ const SHARED_CONFIG = {
     defaultViewport: { width: 800, height: 600 },
     ignoreHTTPSErrors: true,
     waitForInitialPage: false,
-    executablePath: process.platform === 'linux' ? '/usr/bin/chromium-browser' : undefined
+    executablePath: process.platform === 'linux' 
+      ? (function() {
+          // Common Chromium paths on Linux systems
+          const paths = [
+            '/usr/bin/chromium',           // Debian/Ubuntu
+            '/usr/bin/chromium-browser',   // Ubuntu/Debian alternative
+            '/usr/bin/google-chrome',      // Chrome fallback
+            '/snap/bin/chromium',          // Snap package
+          ];
+          return paths.find(path => fs.existsSync(path)) || undefined;
+        })()
+      : undefined
   },
   RATE_LIMIT: {
     requestsPerMinute: 30,
@@ -771,7 +782,7 @@ class FundraisingScanner {
     console.log(`❌ Failed: ${this.metrics.failureCount}`);
     console.log(`⏭️ Skipped: ${this.metrics.skippedCount}`);
     console.log(`⚠️ Not Found: ${this.metrics.notFoundCount}`);
-    console.log(`���️ Total Runtime: ${minutes}m ${seconds}s`);
+    console.log(`️ Total Runtime: ${minutes}m ${seconds}s`);
     
     if (this.failedScans.items.length > 0) {
       console.log(this.generateFailedScansReport());
