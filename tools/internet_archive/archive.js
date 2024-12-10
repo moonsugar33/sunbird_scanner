@@ -102,27 +102,13 @@ async function checkEnvFile() {
 }
 
 async function getConfig() {
-  // First get the table choice to query max ID
-  const { table } = await inquirer.prompt([
+  const answers = await inquirer.prompt([
     {
       type: 'list',
       name: 'table',
       message: 'Which table would you like to scan?',
       choices: ['gv-links', 'sunbird']
-    }
-  ]);
-
-  // Get the maximum ID from the selected table
-  const { data: maxResult } = await supabase
-    .from(table)
-    .select('id')
-    .order('id', { ascending: false })
-    .limit(1);
-
-  const maxId = maxResult?.[0]?.id || 1;
-
-  // Now get the rest of the config
-  const answers = await inquirer.prompt([
+    },
     {
       type: 'input',
       name: 'startId',
@@ -135,13 +121,13 @@ async function getConfig() {
       },
       filter: (input) => {
         const num = parseInt(input);
-        return isNaN(num) ? 1 : num;
+        return isNaN(num) ? 1 : num;  // Return 1 if invalid input
       }
     },
     {
       type: 'input',
       name: 'endId',
-      message: `Enter end ID (optional, press enter to scan all up to ${maxId}):`,
+      message: 'Enter end ID (optional, press enter to scan all):',
       validate: (input, answers) => {
         if (input === '') return true;
         const num = parseInt(input);
@@ -149,9 +135,9 @@ async function getConfig() {
         return num >= answers.startId ? true : 'End ID must be greater than or equal to start ID';
       },
       filter: (input) => {
-        if (input === '') return maxId;  // Use maxId instead of null
+        if (input === '') return null;
         const num = parseInt(input);
-        return isNaN(num) ? maxId : num;
+        return isNaN(num) ? null : num;
       }
     },
     {
@@ -170,10 +156,9 @@ async function getConfig() {
   
   // Convert to 0-based indices for internal use
   return {
-    table,
     ...answers,
     startId: answers.startId - 1,
-    endId: answers.endId - 1
+    endId: answers.endId !== null ? answers.endId - 1 : null
   };
 }
 
@@ -244,44 +229,11 @@ async function archiveLink(url, attempt = 1, captureOutlinks = false) {
     return archiveUrl;
 
   } catch (error) {
+    clearTimeout(timeout);
     if (error.name === 'AbortError') {
       throw new Error('Request timed out');
     }
     log.error(`Archive attempt ${attempt} failed: ${error.message}`, error);
-    return null;
-  }
-}
-
-async function shortenUrl(url) {
-  try {
-    const options = {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'insomnia/2023.5.8',
-        Accept: 'application/json',
-        Authorization: 'Bearer Vpc0WLNcOX31rAEbIhr7r6dDVIc0oRIi6rq11bAlma6w1rkHmbGhGrGRKiUxyCM8'
-      },
-      body: new URLSearchParams({
-        url: url,
-        domain_id: '3',
-        privacy: '1',
-        urls: '',
-        multiple_links: '0',
-        alias: '',
-        space_id: ''
-      })
-    };
-
-    const response = await fetch('https://gazafund.me/api/v1/links', options);
-    if (!response.ok) {
-      throw new Error(`URL shortening failed with status: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    return data.short_url || null;
-  } catch (error) {
-    log.error(`Failed to shorten URL: ${error.message}`);
     return null;
   }
 }
@@ -329,13 +281,6 @@ async function main() {
     // Process URLs one at a time
     for (const urlRecord of urls) {
       log.info(`[${processedCount + 1}/${urls.length}] Processing URL: ${urlRecord.link}`);
-      
-      // Try to shorten the URL first
-      const shortUrl = await shortenUrl(urlRecord.link);
-      if (shortUrl) {
-        log.success(`URL shortened: ${shortUrl}`);
-      }
-
       log.info(`Current rate limit delay: ${RATE_LIMITS.currentDelay}ms`, true);
 
       let archiveUrl = null;
@@ -358,7 +303,6 @@ async function main() {
             archived_at: new Date().toISOString(),
             archive_url: archiveUrl,
             last_checked: new Date().toISOString(),
-            short: shortUrl  // Add the short URL to the update
           })
           .eq('id', urlRecord.id);
 
