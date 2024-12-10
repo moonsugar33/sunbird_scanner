@@ -7,6 +7,8 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import yargs from 'yargs';
+import { hideBin } from 'yargs/helpers';
 import { FundraisingScanner, SCANNER_CONFIGS } from './scanner.js';
 
 const execAsync = promisify(exec);
@@ -14,6 +16,38 @@ const execAsync = promisify(exec);
 // Get current file's directory (needed for ES modules)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// Parse command line arguments
+const argv = yargs(hideBin(process.argv))
+    .option('scanner', {
+        alias: 's',
+        description: 'Scanner type to run',
+        type: 'string',
+        choices: Object.keys(SCANNER_CONFIGS)
+    })
+    .option('start', {
+        alias: 'from',
+        description: 'Start index',
+        type: 'number'
+    })
+    .option('end', {
+        alias: 'to',
+        description: 'End index',
+        type: 'number'
+    })
+    .option('quiet', {
+        alias: 'q',
+        description: 'Run in quiet mode (no ASCII logo)',
+        type: 'boolean',
+        default: false
+    })
+    .option('skip-deps', {
+        description: 'Skip dependency check',
+        type: 'boolean',
+        default: false
+    })
+    .help()
+    .argv;
 
 // Use path.join for cross-platform path handling
 const CONFIG_PATH = join(__dirname, '.env');
@@ -127,25 +161,45 @@ async function checkAndCreateEnvFile() {
 }
 
 async function main() {
-    displayLogo();
+    // Only show logo if not in quiet mode
+    if (!argv.quiet) {
+        displayLogo();
+    }
     
     try {
-        await checkAndInstallDependencies();
+        // Skip dependency check if flag is set
+        if (!argv['skip-deps']) {
+            await checkAndInstallDependencies();
+        }
         await checkAndCreateEnvFile();
         
-        const answers = await inquirer.prompt(questions);
-        
+        let scannerType, startIndex, endIndex;
+
+        if (argv.scanner) {
+            // Use command line arguments if provided
+            scannerType = argv.scanner;
+            startIndex = argv.start || 1;
+            endIndex = argv.end || null;
+        } else {
+            // Fall back to interactive mode if no scanner specified
+            const answers = await inquirer.prompt(questions);
+            scannerType = answers.scannerType;
+            startIndex = answers.useRange ? parseInt(answers.startRange) : 1;
+            endIndex = answers.useRange ? parseInt(answers.endRange) : null;
+        }
+
         // Initialize the selected scanner
-        const scanner = new FundraisingScanner(answers.scannerType);
+        const scanner = new FundraisingScanner(scannerType);
         
-        // Run the scanner with any specified range
+        // Run the scanner with specified range
         await scanner.run({
-            startIndex: answers.useRange ? parseInt(answers.startRange) : 1,
-            endIndex: answers.useRange ? parseInt(answers.endRange) : null
+            startIndex: startIndex,
+            endIndex: endIndex
         });
         
     } catch (error) {
         console.error('Error:', error);
+        process.exit(1);
     }
 }
 
