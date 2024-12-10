@@ -12,6 +12,24 @@ import fs from 'fs';
 // Configure dotenv
 dotenv.config();
 
+// Function to detect browser executable
+const detectBrowserExecutable = () => {
+  if (process.platform !== 'linux') return undefined;
+  
+  const paths = [
+    '/usr/bin/chromium',           // Debian/Ubuntu
+    '/usr/bin/chromium-browser',   // Ubuntu/Debian alternative
+    '/usr/bin/google-chrome',      // Chrome fallback
+    '/snap/bin/chromium',          // Snap package
+  ];
+  
+  const foundPath = paths.find(path => fs.existsSync(path));
+  if (!foundPath) {
+    console.warn('⚠️ No Chromium/Chrome executable found. Please install chromium-browser or google-chrome');
+  }
+  return foundPath;
+};
+
 // Constants and configurations for different scanners
 const SCANNER_CONFIGS = {
   GAZAVETTERS: {
@@ -87,18 +105,7 @@ const SHARED_CONFIG = {
     defaultViewport: { width: 800, height: 600 },
     ignoreHTTPSErrors: true,
     waitForInitialPage: false,
-    executablePath: process.platform === 'linux' 
-      ? (function() {
-          // Common Chromium paths on Linux systems
-          const paths = [
-            '/usr/bin/chromium',           // Debian/Ubuntu
-            '/usr/bin/chromium-browser',   // Ubuntu/Debian alternative
-            '/usr/bin/google-chrome',      // Chrome fallback
-            '/snap/bin/chromium',          // Snap package
-          ];
-          return paths.find(path => fs.existsSync(path)) || undefined;
-        })()
-      : undefined
+    executablePath: detectBrowserExecutable()
   },
   RATE_LIMIT: {
     requestsPerMinute: 30,
