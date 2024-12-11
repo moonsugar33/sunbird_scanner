@@ -102,7 +102,19 @@ const SHARED_CONFIG = {
       '--disable-ipc-flooding-protection',
       '--window-size=1920,1080',
       '--disable-features=site-per-process',
-      ...(process.platform === 'linux' ? ['--no-zygote', '--single-process'] : [])
+      '--disable-software-rasterizer',
+      '--disable-default-apps',
+      '--js-flags="--max-old-space-size=2048"',
+      '--memory-pressure-off',
+      ...(process.platform === 'linux' ? [
+        '--no-zygote',
+        '--single-process',
+        '--disable-accelerated-2d-canvas',
+        '--disable-gl-drawing-for-tests',
+        '--use-gl=swiftshader',
+        '--disable-remote-fonts',
+        '--disable-sync'
+      ] : [])
     ],
     defaultViewport: { width: 1920, height: 1080 },
     ignoreHTTPSErrors: true,
@@ -171,6 +183,28 @@ const SITE_CONFIGS = {
   }
 };
 
+// Add this function at the top level
+async function cleanupMemory(browser) {
+  try {
+    if (!browser) return;
+    
+    const pages = await browser.pages();
+    await Promise.all(pages.map(async (page) => {
+      if (!page.isClosed()) {
+        await page.removeAllListeners();
+        await page.close();
+      }
+    }));
+    
+    // Force garbage collection if available
+    if (global.gc) {
+      global.gc();
+    }
+  } catch (error) {
+    console.error('Error during memory cleanup:', error);
+  }
+}
+
 // Scanner class to handle different types of scans
 class FundraisingScanner {
   constructor(scannerType) {
@@ -195,7 +229,10 @@ class FundraisingScanner {
       skippedCount: 0,
       notFoundCount: 0,
       responseTimesMs: [],
-      errors: {}
+      errors: {},
+      memoryUsage: [],
+      browserCrashes: 0,
+      avgResponseTime: 0
     };
     
     // Initialize failed scans tracking
@@ -210,6 +247,20 @@ class FundraisingScanner {
         });
       }
     };
+    
+    // Add periodic monitoring
+    setInterval(() => {
+      const usage = process.memoryUsage();
+      this.metrics.memoryUsage.push({
+        timestamp: Date.now(),
+        heapUsed: usage.heapUsed,
+        heapTotal: usage.heapTotal
+      });
+      
+      // Keep only last hour of metrics
+      const oneHourAgo = Date.now() - 3600000;
+      this.metrics.memoryUsage = this.metrics.memoryUsage.filter(m => m.timestamp > oneHourAgo);
+    }, 60000);
   }
 
   setupShutdownHandler() {
@@ -263,16 +314,23 @@ class FundraisingScanner {
   }
 
   async rateLimiter() {
-    const now = Date.now();
-    const minWait = Math.floor(60000 / SHARED_CONFIG.RATE_LIMIT.requestsPerMinute);
-    const elapsed = now - this.lastRequest;
-    const delay = Math.max(0, minWait - elapsed);
-    
-    if (delay > 0) {
-      await this.delay(delay);
+    try {
+      const now = Date.now();
+      if (!this.lastRequest) this.lastRequest = now;
+      
+      const minWait = Math.floor(60000 / SHARED_CONFIG.RATE_LIMIT.requestsPerMinute);
+      const elapsed = now - this.lastRequest;
+      const delay = Math.max(0, minWait - elapsed);
+      
+      if (delay > 0) {
+        await this.delay(delay);
+      }
+      
+      this.lastRequest = Date.now();
+    } catch (error) {
+      console.error('Rate limiter error:', error);
+      await this.delay(SHARED_CONFIG.RATE_LIMIT.minDelay);
     }
-    
-    this.lastRequest = Date.now();
   }
 
   async fetchCampaignUrls() {
@@ -329,59 +387,71 @@ class FundraisingScanner {
   }
 
   async updateCampaignData(id, target, raised, name, currency) {
-    try {
-      // First check if we already have a short URL
-      const { data: existing, error: fetchError } = await this.supabase
-        .from(this.config.tableName)
-        .select('short')
-        .eq('id', id)
-        .single();
-
-      if (fetchError) throw fetchError;
-
-      // Only get new short URL if one doesn't exist
-      let shortUrl = existing?.short;
-      if (!shortUrl) {
-        console.log('📎 No existing short URL found, generating new one...');
-        const { data: campaignData } = await this.supabase
+    const maxRetries = 3;
+    let attempt = 0;
+    
+    while (attempt < maxRetries) {
+      try {
+        // First check if we already have a short URL
+        const { data: existing, error: fetchError } = await this.supabase
           .from(this.config.tableName)
-          .select('link')
+          .select('short')
           .eq('id', id)
           .single();
-          
-        if (campaignData?.link) {
-          shortUrl = await this.shortenUrl(campaignData.link);
+
+        if (fetchError) throw fetchError;
+
+        // Only get new short URL if one doesn't exist
+        let shortUrl = existing?.short;
+        if (!shortUrl) {
+          console.log('📎 No existing short URL found, generating new one...');
+          const { data: campaignData } = await this.supabase
+            .from(this.config.tableName)
+            .select('link')
+            .eq('id', id)
+            .single();
+            
+          if (campaignData?.link) {
+            shortUrl = await this.shortenUrl(campaignData.link);
+          }
+        } else {
+          console.log(`ℹ️ Using existing short URL: ${shortUrl}`);
         }
-      } else {
-        console.log(`ℹ️ Using existing short URL: ${shortUrl}`);
+
+        const { data, error } = await this.supabase
+          .from(this.config.tableName)
+          .update({
+            target: parseInt(target) || null,
+            raised: parseInt(raised) || null,
+            title: name || null,
+            currency: currency || null,
+            short: shortUrl,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', id)
+          .select();
+
+        if (error) {
+          console.error(`❌ Database update error: ${error.message}`);
+          throw error;
+        }
+
+        if (shortUrl) {
+          console.log(`🔗 Short URL saved to database: ${shortUrl}`);
+        }
+
+        return data ? true : false;
+      } catch (error) {
+        attempt++;
+        console.error(`Database update error (attempt ${attempt}/${maxRetries}):`, error);
+        
+        if (attempt === maxRetries) {
+          this.failedScans.add(id, null, `Database error: ${error.message}`);
+          return false;
+        }
+        
+        await this.delay(2000 * attempt); // Exponential backoff
       }
-
-      const { data, error } = await this.supabase
-        .from(this.config.tableName)
-        .update({
-          target: parseInt(target) || null,
-          raised: parseInt(raised) || null,
-          title: name || null,
-          currency: currency || null,
-          short: shortUrl,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', id)
-        .select();
-
-      if (error) {
-        console.error(`❌ Database update error: ${error.message}`);
-        throw error;
-      }
-
-      if (shortUrl) {
-        console.log(`🔗 Short URL saved to database: ${shortUrl}`);
-      }
-
-      return data ? true : false;
-    } catch (error) {
-      console.error(`❌ Database update error: ${error.message}`);
-      return false;
     }
   }
 
@@ -396,61 +466,74 @@ class FundraisingScanner {
 
   parseRaisedAmount(text) {
     if (!text) return {
-      currency: 'Not found',
-      amount: 'Not found',
-      raw: 'Not found'
+      currency: null,
+      amount: null,
+      raw: null
     };
 
-    // First, try to match the GoFundMe specific HTML format
-    const gfmMatch = text.match(
-      /<span[^>]*>([\d,. ]+)<\/span>\s*<span[^>]*>([A-Z]{3}|[Kk][Rr]?)\s*<\/span>/i
-    );
+    // Sanitize input
+    text = text.toString().trim();
+    
+    try {
+      // First, try to match the GoFundMe specific HTML format
+      const gfmMatch = text.match(
+        /<span[^>]*>([\d,. ]+)<\/span>\s*<span[^>]*>([A-Z]{3}|[Kk][Rr]?)\s*<\/span>/i
+      );
 
-    if (gfmMatch) {
-      const amount = gfmMatch[1].replace(/[,\s]/g, '');
-      const rawCurrency = gfmMatch[2].trim().toUpperCase();
+      if (gfmMatch) {
+        const amount = gfmMatch[1].replace(/[,\s]/g, '');
+        const rawCurrency = gfmMatch[2].trim().toUpperCase();
+        return {
+          currency: SHARED_CONFIG.CURRENCY_MAPPING[rawCurrency] || rawCurrency,
+          amount: amount,
+          raw: gfmMatch[0]
+        };
+      }
+
+      // Then try to match post-amount currencies
+      const postAmountMatch = text.match(
+        /([\d,. ]+)\s*([A-Z]{3}|[Kk][Rr]?)\b/i
+      );
+
+      if (postAmountMatch) {
+        const amount = postAmountMatch[1].replace(/[,\s]/g, '');
+        const rawCurrency = postAmountMatch[2].trim().toUpperCase();
+        return {
+          currency: SHARED_CONFIG.CURRENCY_MAPPING[rawCurrency] || rawCurrency,
+          amount: amount,
+          raw: postAmountMatch[0]
+        };
+      }
+
+      // Finally, try to match pre-amount currencies
+      const preAmountMatch = text.match(
+        /([€$£¥₹₽₪₱₩R$]|[Kk]r\.?|EUR|USD|GBP)\s*([\d,.]+)/i
+      );
+
+      if (preAmountMatch) {
+        const amount = preAmountMatch[2].replace(/[,\s]/g, '');
+        const rawCurrency = preAmountMatch[1].trim().toUpperCase();
+        return {
+          currency: SHARED_CONFIG.CURRENCY_MAPPING[rawCurrency] || rawCurrency,
+          amount: amount,
+          raw: preAmountMatch[0]
+        };
+      }
+
       return {
-        currency: SHARED_CONFIG.CURRENCY_MAPPING[rawCurrency] || rawCurrency,
-        amount: amount,
-        raw: gfmMatch[0]
+        currency: 'Not found',
+        amount: 'Not found',
+        raw: text // Return original text for debugging
+      };
+    } catch (error) {
+      console.error('Error parsing amount:', error);
+      return {
+        currency: null,
+        amount: null,
+        raw: text,
+        error: error.message
       };
     }
-
-    // Then try to match post-amount currencies
-    const postAmountMatch = text.match(
-      /([\d,. ]+)\s*([A-Z]{3}|[Kk][Rr]?)\b/i
-    );
-
-    if (postAmountMatch) {
-      const amount = postAmountMatch[1].replace(/[,\s]/g, '');
-      const rawCurrency = postAmountMatch[2].trim().toUpperCase();
-      return {
-        currency: SHARED_CONFIG.CURRENCY_MAPPING[rawCurrency] || rawCurrency,
-        amount: amount,
-        raw: postAmountMatch[0]
-      };
-    }
-
-    // Finally, try to match pre-amount currencies
-    const preAmountMatch = text.match(
-      /([€$£¥₹₽₪₱₩R$]|[Kk]r\.?|EUR|USD|GBP)\s*([\d,.]+)/i
-    );
-
-    if (preAmountMatch) {
-      const amount = preAmountMatch[2].replace(/[,\s]/g, '');
-      const rawCurrency = preAmountMatch[1].trim().toUpperCase();
-      return {
-        currency: SHARED_CONFIG.CURRENCY_MAPPING[rawCurrency] || rawCurrency,
-        amount: amount,
-        raw: preAmountMatch[0]
-      };
-    }
-
-    return {
-      currency: 'Not found',
-      amount: 'Not found',
-      raw: 'Not found'
-    };
   }
 
   parseTargetAmount(text) {
@@ -635,7 +718,7 @@ class FundraisingScanner {
       return updated;
     } catch (error) {
       this.metrics.failureCount++;
-      console.error(`❌ Error processing Chuffed campaign: ${error.message}`);
+      console.error(`��� Error processing Chuffed campaign: ${error.message}`);
       return false;
     }
   }
@@ -646,6 +729,18 @@ class FundraisingScanner {
     try {
       page = await browser.newPage();
       
+      // Optimize page performance
+      await page.setRequestInterception(true);
+      page.on('request', request => {
+        // Block unnecessary resources
+        if (['image', 'stylesheet', 'font', 'media'].includes(request.resourceType())) {
+          request.abort();
+        } else {
+          request.continue();
+        }
+      });
+
+      // Set performance timeouts
       await page.setDefaultNavigationTimeout(60000);
       await page.setDefaultTimeout(60000);
       
@@ -735,6 +830,7 @@ class FundraisingScanner {
     } finally {
       if (page) {
         try {
+          await page.removeAllListeners();
           await page.close();
         } catch (err) {
           console.error('Error closing page:', err);
@@ -820,6 +916,25 @@ class FundraisingScanner {
 
   async run({ startIndex = 1, endIndex = null }) {
     let browser = null;
+    let retries = 3;
+    
+    while (retries > 0) {
+      try {
+        browser = await puppeteer.launch({
+          ...SHARED_CONFIG.BROWSER_CONFIG,
+          // Add error handling for browser crashes
+          handleSIGINT: false,
+          handleSIGTERM: false,
+          handleSIGHUP: false
+        });
+        break;
+      } catch (error) {
+        console.error(`Browser launch failed (${retries} retries left):`, error);
+        retries--;
+        if (retries === 0) throw error;
+        await this.delay(5000);
+      }
+    }
     
     try {
       this.displayLogo();
@@ -838,8 +953,6 @@ class FundraisingScanner {
       console.log(`Found ${campaigns.length} total campaigns`);
       console.log(`Processing campaigns from #${startIndex} to #${endIndex || campaigns.length}\n`);
 
-      browser = await puppeteer.launch(SHARED_CONFIG.BROWSER_CONFIG);
-      
       for (let i = 0; i < campaignsToProcess.length; i++) {
         if (this.isShuttingDown) {
           console.log('🛑 Shutdown requested, stopping gracefully...');
@@ -855,12 +968,17 @@ class FundraisingScanner {
         
         await this.scrapeCampaign(campaign, browser);
         
-        // Periodic cleanup
-        if (i % 10 === 0) {
-          if (global.gc) global.gc();
-          // Clear browser cache periodically
-          const pages = await browser.pages();
-          await Promise.all(pages.map(page => page.close()));
+        // Enhanced periodic cleanup
+        if (i % 5 === 0) { // Increased frequency of cleanup
+          await cleanupMemory(browser);
+          
+          // Restart browser every 50 campaigns to prevent memory leaks
+          if (i > 0 && i % 50 === 0) {
+            console.log('🔄 Restarting browser for memory optimization...');
+            await browser.close();
+            await this.delay(1000); // Add delay before restart
+            browser = await puppeteer.launch(SHARED_CONFIG.BROWSER_CONFIG);
+          }
         }
       }
       
