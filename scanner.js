@@ -88,7 +88,7 @@ const SHARED_CONFIG = {
     'DKK': 'kr'
   },
   BROWSER_CONFIG: {
-    headless: true,
+    headless: "new",
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -100,11 +100,13 @@ const SHARED_CONFIG = {
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
       '--disable-ipc-flooding-protection',
+      '--window-size=1920,1080',
+      '--disable-features=site-per-process',
       ...(process.platform === 'linux' ? ['--no-zygote', '--single-process'] : [])
     ],
-    defaultViewport: { width: 800, height: 600 },
+    defaultViewport: { width: 1920, height: 1080 },
     ignoreHTTPSErrors: true,
-    waitForInitialPage: false,
+    waitForInitialPage: true,
     executablePath: detectBrowserExecutable()
   },
   RATE_LIMIT: {
@@ -292,15 +294,16 @@ class FundraisingScanner {
     try {
       console.log('🔗 Attempting to shorten URL...');
       
-      const options = {
+      const response = await axios({
         method: 'POST',
+        url: 'https://gazafund.me/api/v1/links',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
           'User-Agent': 'insomnia/2023.5.8',
-          Accept: 'application/json',
-          Authorization: `Bearer ${process.env.SHORTENER_BEARER_TOKEN}`
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${process.env.SHORTENER_BEARER_TOKEN}`
         },
-        body: new URLSearchParams({
+        data: new URLSearchParams({
           url: url,
           domain_id: '3',
           privacy: '1',
@@ -308,18 +311,15 @@ class FundraisingScanner {
           multiple_links: '0',
           alias: '',
           space_id: ''
-        })
-      };
+        }).toString()
+      });
 
-      const response = await fetch('https://gazafund.me/api/v1/links', options);
-      const data = await response.json();
-      
-      if (data.status === 200 && data.data?.short_url) {
-        console.log(`✅ URL shortened successfully: ${data.data.short_url}`);
-        return data.data.short_url;
+      if (response.status === 200 && response.data?.data?.short_url) {
+        console.log(`✅ URL shortened successfully: ${response.data.data.short_url}`);
+        return response.data.data.short_url;
       } else {
         console.log('❌ No short URL returned from API');
-        console.log('API Response:', JSON.stringify(data, null, 2));
+        console.log('API Response:', JSON.stringify(response.data, null, 2));
         return null;
       }
     } catch (error) {
@@ -646,17 +646,31 @@ class FundraisingScanner {
     try {
       page = await browser.newPage();
       
-      // Initial page load with retries
+      await page.setDefaultNavigationTimeout(60000);
+      await page.setDefaultTimeout(60000);
+      
+      page.on('error', err => {
+        console.error('Page error:', err);
+      });
+
+      page.on('pageerror', err => {
+        console.error('Page error:', err);
+      });
+
       await this.retry(async () => {
-        await Promise.race([
-          page.goto(campaign.link, {
-            waitUntil: 'domcontentloaded',
-            timeout: 30000
-          }),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('TimeoutError')), 30000)
-          )
-        ]);
+        try {
+          const response = await page.goto(campaign.link, {
+            waitUntil: ['domcontentloaded', 'networkidle0'],
+            timeout: 60000
+          });
+
+          if (!response.ok()) {
+            throw new Error(`HTTP ${response.status()} on ${campaign.link}`);
+          }
+        } catch (err) {
+          console.error(`Navigation error: ${err.message}`);
+          throw err;
+        }
       }, 'TimeoutError');
 
       const selectors = SITE_CONFIGS.GOFUNDME.selectors;
@@ -719,7 +733,13 @@ class FundraisingScanner {
       console.error(`❌ Error processing GoFundMe campaign: ${error.message}`);
       return false;
     } finally {
-      if (page) await page.close();
+      if (page) {
+        try {
+          await page.close();
+        } catch (err) {
+          console.error('Error closing page:', err);
+        }
+      }
     }
   }
 
@@ -799,6 +819,8 @@ class FundraisingScanner {
   }
 
   async run({ startIndex = 1, endIndex = null }) {
+    let browser = null;
+    
     try {
       this.displayLogo();
       
@@ -816,38 +838,44 @@ class FundraisingScanner {
       console.log(`Found ${campaigns.length} total campaigns`);
       console.log(`Processing campaigns from #${startIndex} to #${endIndex || campaigns.length}\n`);
 
-      const browser = await puppeteer.launch(SHARED_CONFIG.BROWSER_CONFIG);
+      browser = await puppeteer.launch(SHARED_CONFIG.BROWSER_CONFIG);
       
-      try {
-        for (let i = 0; i < campaignsToProcess.length; i++) {
-          if (this.isShuttingDown) {
-            console.log('🛑 Shutdown requested, stopping gracefully...');
-            break;
-          }
-          
-          const campaign = campaignsToProcess[i];
-          const current = i + 1;
-          const percentage = Math.round((current / campaignsToProcess.length) * 100);
-          
-          console.log(`\n--- Campaign ${current}/${campaignsToProcess.length} (${percentage}%) ---`);
-          console.log(`ID: ${campaign.id} | URL: ${campaign.link}`);
-          
-          await this.scrapeCampaign(campaign, browser);
-          
-          // Periodic cleanup
-          if (i % 10 === 0 && global.gc) {
-            global.gc();
-          }
+      for (let i = 0; i < campaignsToProcess.length; i++) {
+        if (this.isShuttingDown) {
+          console.log('🛑 Shutdown requested, stopping gracefully...');
+          break;
         }
-      } finally {
-        await browser.close();
+        
+        const campaign = campaignsToProcess[i];
+        const current = i + 1;
+        const percentage = Math.round((current / campaignsToProcess.length) * 100);
+        
+        console.log(`\n--- Campaign ${current}/${campaignsToProcess.length} (${percentage}%) ---`);
+        console.log(`ID: ${campaign.id} | URL: ${campaign.link}`);
+        
+        await this.scrapeCampaign(campaign, browser);
+        
+        // Periodic cleanup
+        if (i % 10 === 0) {
+          if (global.gc) global.gc();
+          // Clear browser cache periodically
+          const pages = await browser.pages();
+          await Promise.all(pages.map(page => page.close()));
+        }
       }
-      
-      this.displaySummary();
       
     } catch (error) {
       console.error('Error during scanning:', error);
       throw error;
+    } finally {
+      if (browser) {
+        try {
+          await browser.close();
+        } catch (err) {
+          console.error('Error closing browser:', err);
+        }
+      }
+      this.displaySummary();
     }
   }
 }
