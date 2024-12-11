@@ -598,7 +598,7 @@ class FundraisingScanner {
     try {
       this.logger.debug(`    ├─ Calling shortener API...`);
       
-      const response = await axios({
+      const options = {
         method: 'POST',
         url: 'https://gazafund.me/api/v1/links',
         headers: {
@@ -616,18 +616,29 @@ class FundraisingScanner {
           alias: '',
           space_id: ''
         }).toString()
-      });
+      };
 
-      if (response.status === 200 && response.data?.data?.short_url) {
-        const shortUrl = response.data.data.short_url;
-        this.logger.debug(`    └─✨ Created ${shortUrl} (-${url.length - shortUrl.length} chars)`);
-        return shortUrl;
+      const response = await axios(options);
+
+      // Accept both 200 and 201 as valid response codes
+      if ((response.status === 200 || response.status === 201) && response.data?.data) {
+        const shortUrl = response.data.data.short_url || response.data.data.shortUrl;
+        if (shortUrl) {
+          this.logger.debug(`    └─✨ Created ${shortUrl} (-${url.length - shortUrl.length} chars)`);
+          return shortUrl;
+        }
       }
       
-      this.logger.warn(`    └─⚠️ API returned invalid response`);
+      this.logger.warn(`    └─⚠️ No short URL in response`, {
+        status: response.status,
+        data: JSON.stringify(response.data, null, 2)
+      });
       return null;
+
     } catch (error) {
-      this.logger.warn(`    └─❌ API error: ${error.message}`);
+      this.logger.warn(`    └─❌ API error: ${error.message}`, {
+        error: error.response?.data || error.message
+      });
       return null;
     }
   }
@@ -975,6 +986,22 @@ class FundraisingScanner {
         )
       ]);
 
+      // Handle 404 responses
+      if (response.status() === 404) {
+        this.logger.warn(`  └─🚫 Campaign no longer exists (404)`);
+        // Update database to mark as dead URL
+        await this.supabase
+          .from(this.config.tableName)
+          .update({
+            is_dead: true,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', campaign.id);
+        
+        this.metrics.notFoundCount++;
+        return false;
+      }
+
       if (!response?.ok()) throw new Error(`Invalid response: ${response?.status()}`);
 
       // Extract and process data with retries
@@ -1205,7 +1232,7 @@ class FundraisingScanner {
         
         const campaigns = await this.fetchCampaignUrls();
         if (!campaigns?.length) {
-          await this.sendDiscordWebhook('���️ No campaigns found to process', 0xffff00);
+          await this.sendDiscordWebhook('️ No campaigns found to process', 0xffff00);
           console.log('No campaigns found to process');
           return;
         }
