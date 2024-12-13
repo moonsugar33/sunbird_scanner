@@ -102,13 +102,33 @@ async function checkEnvFile() {
 }
 
 async function getConfig() {
-  const answers = await inquirer.prompt([
+  // First get the table choice
+  const { table } = await inquirer.prompt([
     {
       type: 'list',
       name: 'table',
       message: 'Which table would you like to scan?',
       choices: ['gv-links', 'sunbird']
-    },
+    }
+  ]);
+
+  // Get the maximum ID from the selected table
+  const { data: maxIdResult, error: maxIdError } = await supabase
+    .from(table)
+    .select('id')
+    .order('id', { ascending: false })
+    .limit(1)
+    .single();
+
+  if (maxIdError) {
+    log.error('Error fetching maximum ID:', maxIdError);
+    throw maxIdError;
+  }
+
+  const maxId = maxIdResult?.id || 1;
+
+  // Get the rest of the configuration
+  const answers = await inquirer.prompt([
     {
       type: 'input',
       name: 'startId',
@@ -121,13 +141,14 @@ async function getConfig() {
       },
       filter: (input) => {
         const num = parseInt(input);
-        return isNaN(num) ? 1 : num;  // Return 1 if invalid input
+        return isNaN(num) ? 1 : num;
       }
     },
     {
       type: 'input',
       name: 'endId',
-      message: 'Enter end ID (optional, press enter to scan all):',
+      message: `Enter end ID (optional, press enter for max: ${maxId}):`,
+      default: String(maxId),
       validate: (input, answers) => {
         if (input === '') return true;
         const num = parseInt(input);
@@ -135,9 +156,9 @@ async function getConfig() {
         return num >= answers.startId ? true : 'End ID must be greater than or equal to start ID';
       },
       filter: (input) => {
-        if (input === '') return null;
+        if (input === '') return maxId;
         const num = parseInt(input);
-        return isNaN(num) ? null : num;
+        return isNaN(num) ? maxId : num;
       }
     },
     {
@@ -156,13 +177,16 @@ async function getConfig() {
   
   // Convert to 0-based indices for internal use
   return {
-    ...answers,
+    table,
     startId: answers.startId - 1,
-    endId: answers.endId !== null ? answers.endId - 1 : null
+    endId: answers.endId - 1,
+    captureOutlinks: answers.captureOutlinks,
+    skipArchived: answers.skipArchived
   };
 }
 
 async function archiveLink(url, attempt = 1, captureOutlinks = false) {
+  let timeout;
   try {
     // Validate URL more robustly
     const parsedUrl = new URL(url);
@@ -177,7 +201,7 @@ async function archiveLink(url, attempt = 1, captureOutlinks = false) {
     log.info(`Attempt ${attempt}: Archiving URL`, true);
     
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    timeout = setTimeout(() => controller.abort(), 30000);
 
     const response = await fetch(`https://web.archive.org/save/${url}`, {
       method: 'GET',
@@ -229,7 +253,7 @@ async function archiveLink(url, attempt = 1, captureOutlinks = false) {
     return archiveUrl;
 
   } catch (error) {
-    clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
     if (error.name === 'AbortError') {
       throw new Error('Request timed out');
     }

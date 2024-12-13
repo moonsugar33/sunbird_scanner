@@ -932,15 +932,20 @@ class FundraisingScanner {
           const data = chuffedData.campaign;
           const raised = (data.collected?.amount || 0) / 100;
           const target = (data.target?.amount || 0) / 100;
-          const currency = data.target?.currency || 'AUD';
+          const currencyCode = data.target?.currency || 'AUD';
+          const currencySymbol = SHARED_CONFIG.CURRENCY_SYMBOLS[currencyCode] || currencyCode;
           const title = data.title || '';
 
           this.logger.info(`└─📊 ${title.substring(0, 40)}${title.length > 40 ? '...' : ''}`);
-          this.logger.info(`  ├─💰 ${raised} ${currency} of ${target} ${currency}`);
+          this.logger.info(`  ├─💰 ${currencySymbol}${raised} of ${currencySymbol}${target}`);
           this.logger.info(`  └─👥 ${data.donations?.totalCount || 0} donations`);
 
           const updated = await this.updateCampaignData(
-            campaign.id, target || null, raised || null, title, currency
+            campaign.id, 
+            target || null, 
+            raised || null, 
+            title, 
+            currencyCode  // Store 3-letter code in database
           );
 
           if (updated) {
@@ -1022,18 +1027,22 @@ class FundraisingScanner {
           const goal = this.parseTargetAmount(data.goalText);
           const supporters = this.parseGoFundMeSupporters(data.supportersText);
 
+          // Ensure consistent currency between raised and goal
+          const currencyCode = raised.currency || goal.currency;
+          const currencySymbol = SHARED_CONFIG.CURRENCY_SYMBOLS[currencyCode] || currencyCode;
+
           // Log the extracted data
           this.logger.info(`└─📊 ${data.title.substring(0, 40)}${data.title.length > 40 ? '...' : ''}`);
-          this.logger.info(`  ├─💰 ${raised.amount} ${raised.currency} of ${goal.amount} ${goal.currency}`);
+          this.logger.info(`  ├─💰 ${currencySymbol}${raised.amount} of ${currencySymbol}${goal.amount}`);
           this.logger.info(`  └─👥 ${supporters || 0} donations`);
 
-          // Update database
+          // Update database with consistent currency code
           const updated = await this.updateCampaignData(
             campaign.id, 
             goal.amount, 
             raised.amount, 
             data.title, 
-            raised.currency
+            currencyCode  // Store 3-letter code in database
           );
 
           if (updated) {
