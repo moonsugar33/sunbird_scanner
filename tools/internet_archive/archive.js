@@ -43,7 +43,15 @@ const RATE_LIMITS = {
   consecutiveFailures: 0,
   consecutiveSuccesses: 0,
   
+  reset() {
+    this.currentDelay = this.baseDelay;
+    this.consecutiveFailures = 0;
+    this.consecutiveSuccesses = 0;
+  },
+  
   calculateNextDelay(isSuccess) {
+    // Add jitter to help prevent thundering herd
+    const jitter = Math.random() * 1000;
     if (isSuccess) {
       this.consecutiveSuccesses++;
       this.consecutiveFailures = 0;
@@ -64,6 +72,102 @@ const RATE_LIMITS = {
     return this.currentDelay;
   }
 };
+
+// Add these constants at the top with other constants
+const RETRY_CONFIG = {
+  maxAttempts: 3,
+  // Error categories and their retry strategies
+  errorCategories: {
+    RATE_LIMIT: {
+      // 429 errors
+      shouldRetry: true,
+      backoffMultiplier: 2,
+      baseDelay: RATE_LIMITS.baseDelay * 2
+    },
+    TIMEOUT: {
+      // Timeout errors
+      shouldRetry: true,
+      backoffMultiplier: 1.5,
+      baseDelay: RATE_LIMITS.baseDelay
+    },
+    SERVER_ERROR: {
+      // 500-599 errors
+      shouldRetry: true,
+      backoffMultiplier: 1.5,
+      baseDelay: RATE_LIMITS.baseDelay
+    },
+    CLIENT_ERROR: {
+      // 400-499 errors (except 429)
+      shouldRetry: false
+    },
+    NETWORK_ERROR: {
+      // Connection errors
+      shouldRetry: true,
+      backoffMultiplier: 1.5,
+      baseDelay: RATE_LIMITS.baseDelay
+    }
+  }
+};
+
+// Add this new function to categorize errors
+function categorizeError(error, responseStatus) {
+  if (responseStatus === 429) return 'RATE_LIMIT';
+  if (error.name === 'AbortError') return 'TIMEOUT';
+  if (responseStatus >= 500) return 'SERVER_ERROR';
+  if (responseStatus >= 400) return 'CLIENT_ERROR';
+  if (error.message.includes('fetch failed') || error.message.includes('network')) return 'NETWORK_ERROR';
+  return 'UNKNOWN';
+}
+
+// Enhanced retry function
+async function retryWithBackoff(url, operation, captureOutlinks) {
+  let lastError = null;
+  let attempt = 1;
+
+  while (attempt <= RETRY_CONFIG.maxAttempts) {
+    try {
+      // Always respect the base rate limit delay
+      if (attempt > 1) {
+        const retryDelay = RATE_LIMITS.currentDelay;
+        log.info(`Retry ${attempt}/${RETRY_CONFIG.maxAttempts}: Waiting ${retryDelay}ms before attempt`, true);
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+      }
+
+      const result = await operation();
+      RATE_LIMITS.calculateNextDelay(true);
+      return result;
+
+    } catch (error) {
+      lastError = error;
+      const errorCategory = categorizeError(error, error.status);
+      const errorConfig = RETRY_CONFIG.errorCategories[errorCategory];
+
+      log.error(
+        `Attempt ${attempt}/${RETRY_CONFIG.maxAttempts} failed: ${error.message} (${errorCategory})`,
+        error
+      );
+
+      if (!errorConfig?.shouldRetry || attempt === RETRY_CONFIG.maxAttempts) {
+        throw new Error(`Final attempt failed: ${error.message}`);
+      }
+
+      // Calculate delay based on error category and attempt number
+      const baseDelay = errorConfig.baseDelay || RATE_LIMITS.baseDelay;
+      const multiplier = errorConfig.backoffMultiplier || 1;
+      const delay = Math.min(
+        baseDelay * Math.pow(multiplier, attempt - 1),
+        RATE_LIMITS.maxDelay
+      );
+
+      RATE_LIMITS.calculateNextDelay(false);
+      RATE_LIMITS.currentDelay = Math.max(RATE_LIMITS.currentDelay, delay);
+      
+      attempt++;
+    }
+  }
+
+  throw lastError;
+}
 
 async function checkEnvFile() {
   try {
@@ -185,79 +289,65 @@ async function getConfig() {
   };
 }
 
+// Update the archiveLink function to use the new retry mechanism
 async function archiveLink(url, attempt = 1, captureOutlinks = false) {
-  let timeout;
+  // URL validation remains the same
+  if (!url?.trim()) {
+    throw new Error('Empty or invalid URL provided');
+  }
+
   try {
-    // Validate URL more robustly
     const parsedUrl = new URL(url);
     if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
       throw new Error('Invalid URL protocol - must be http or https');
     }
     
-    if (!url.trim()) {
-      throw new Error('Empty URL provided');
+    if (!parsedUrl.hostname) {
+      throw new Error('Invalid URL: missing hostname');
     }
 
-    log.info(`Attempt ${attempt}: Archiving URL`, true);
-    
-    const controller = new AbortController();
-    timeout = setTimeout(() => controller.abort(), 30000);
+    return await retryWithBackoff(url, async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
 
-    const response = await fetch(`https://web.archive.org/save/${url}`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `LOW ${process.env.ARCHIVE_KEY}`,
-        'User-Agent': 'ArchiveBot/1.0',
-        'Capture-Outlinks': captureOutlinks.toString()
-      },
-      signal: controller.signal
-    });
+      try {
+        const response = await fetch(`https://web.archive.org/save/${url}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `LOW ${process.env.ARCHIVE_KEY}`,
+            'User-Agent': 'ArchiveBot/1.0',
+            'Capture-Outlinks': captureOutlinks.toString()
+          },
+          signal: controller.signal
+        });
 
-    clearTimeout(timeout);
+        clearTimeout(timeout);
 
-    // Handle rate limiting specifically
-    if (response.status === 429) {
-      RATE_LIMITS.consecutiveFailures++;
-      RATE_LIMITS.consecutiveSuccesses = 0;
-      RATE_LIMITS.currentDelay = Math.min(
-        RATE_LIMITS.currentDelay * RATE_LIMITS.backoffFactor,
-        RATE_LIMITS.maxDelay
-      );
-      throw new Error('Rate limit exceeded');
-    }
+        if (!response.ok) {
+          const error = new Error(`HTTP ${response.status}: ${response.statusText}`);
+          error.status = response.status;
+          throw error;
+        }
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
+        const archiveUrl = response.headers.get('content-location') 
+          ? `https://web.archive.org${response.headers.get('content-location')}`
+          : response.url.includes('/web/') 
+            ? response.url 
+            : null;
 
-    // Success - gradually reduce delay
-    RATE_LIMITS.consecutiveSuccesses++;
-    RATE_LIMITS.consecutiveFailures = 0;
-    if (RATE_LIMITS.consecutiveSuccesses > 5) {
-      RATE_LIMITS.currentDelay = Math.max(
-        RATE_LIMITS.baseDelay,
-        RATE_LIMITS.currentDelay * RATE_LIMITS.successReduceFactor
-      );
-    }
+        if (!archiveUrl) {
+          throw new Error('Could not determine archive URL');
+        }
 
-    const archiveUrl = response.headers.get('content-location') 
-      ? `https://web.archive.org${response.headers.get('content-location')}`
-      : response.url.includes('/web/') 
-        ? response.url 
-        : null;
+        return archiveUrl;
 
-    if (!archiveUrl) {
-      throw new Error('Could not determine archive URL');
-    }
-
-    return archiveUrl;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }, captureOutlinks);
 
   } catch (error) {
-    if (timeout) clearTimeout(timeout);
-    if (error.name === 'AbortError') {
-      throw new Error('Request timed out');
-    }
-    log.error(`Archive attempt ${attempt} failed: ${error.message}`, error);
+    log.error(`Archive failed: ${error.message}`, error);
     return null;
   }
 }
@@ -353,9 +443,21 @@ async function main() {
 }
 
 // Handle script termination
-process.on('SIGINT', () => {
-  log.warning('Script interrupted, shutting down...');
-  process.exit();
+let isShuttingDown = false;
+
+process.on('SIGINT', async () => {
+  if (isShuttingDown) {
+    log.warning('Forced shutdown initiated...');
+    process.exit(1);
+  }
+  
+  isShuttingDown = true;
+  log.warning('Graceful shutdown initiated, completing current operation...');
+  // Allow current operation to complete
+  setTimeout(() => {
+    log.warning('Shutdown timeout exceeded, forcing exit...');
+    process.exit(1);
+  }, 30000); // 30 second timeout
 });
 
 // Run the script
