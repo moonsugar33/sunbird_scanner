@@ -1054,7 +1054,7 @@ class FundraisingScanner {
         } catch (error) {
           retryCount++;
           if (retryCount === maxRetries) throw error;
-          this.logger.warn(`  ↻ Retry ${retryCount}/${maxRetries}: ${error.message}`);
+          this.logger.warn(`  �� Retry ${retryCount}/${maxRetries}: ${error.message}`);
           await this.delay(2000 * retryCount);
         }
       }
@@ -1213,7 +1213,7 @@ class FundraisingScanner {
   async run({ startIndex = 1, endIndex = null }) {
     let browser = null;
     let pageCount = 0;
-    const MAX_PAGES_BEFORE_RESTART = 25; // Reduced from previous values
+    const MAX_PAGES_BEFORE_RESTART = 10; // Reduced from 25
     
     try {
       // Enhanced browser launch with better error handling
