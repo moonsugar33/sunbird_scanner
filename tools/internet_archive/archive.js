@@ -169,6 +169,57 @@ async function retryWithBackoff(url, operation, captureOutlinks) {
   throw lastError;
 }
 
+const SKIP_DOMAINS = new Set([
+  'tinyurl.com',
+  'bit.ly',
+  'cutt.ly',
+  'goo.gl',
+  'ow.ly',
+  't.co',
+  'is.gd',
+  'buff.ly',
+  'adf.ly',
+  'tiny.cc',
+  'shorte.st',
+  'tr.im',
+  'cli.gs',
+  'linktr.ee',
+  'short.io',
+  'rebrand.ly',
+  'snip.ly',
+  'shorturl.at',
+  'tiny.one',
+  'rotf.lol'
+]);
+
+function isRedirectUrl(urlString) {
+  try {
+    const parsedUrl = new URL(urlString);
+    const hostname = parsedUrl.hostname.toLowerCase();
+    
+    // Check if the hostname is in our skip list
+    if (SKIP_DOMAINS.has(hostname)) {
+      return true;
+    }
+    
+    // Check for common patterns that might indicate a URL shortener
+    if (
+      hostname.includes('redirect') ||
+      hostname.includes('shortener') ||
+      hostname.includes('short.') ||
+      hostname.includes('tiny.') ||
+      hostname.includes('goto.')
+    ) {
+      return true;
+    }
+    
+    return false;
+  } catch (error) {
+    log.error(`Error parsing URL: ${urlString}`, error);
+    return false;
+  }
+}
+
 async function checkEnvFile() {
   try {
     await fs.access('.env');
@@ -306,6 +357,11 @@ async function archiveLink(url, attempt = 1, captureOutlinks = false) {
       throw new Error('Invalid URL: missing hostname');
     }
 
+    // Add the redirect URL check here
+    if (isRedirectUrl(url)) {
+      throw new Error('Skipping redirect/shortener URL');
+    }
+
     return await retryWithBackoff(url, async () => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 30000);
@@ -395,6 +451,49 @@ async function main() {
     // Process URLs one at a time
     for (const urlRecord of urls) {
       log.info(`[${processedCount + 1}/${urls.length}] Processing URL: ${urlRecord.link}`);
+      
+      // Add check for null/empty links
+      if (!urlRecord.link) {
+        log.warning(`Skipping null/empty URL for ID: ${urlRecord.id}`);
+        const { error: updateError } = await supabase
+          .from(config.table)
+          .update({
+            archived_at: new Date().toISOString(),
+            archive_url: null,
+            last_checked: new Date().toISOString(),
+            status: 'skipped_null'
+          })
+          .eq('id', urlRecord.id);
+
+        if (updateError) {
+          log.error(`Failed to update database for null URL ID ${urlRecord.id}:`, updateError);
+        }
+        
+        processedCount++;
+        continue;
+      }
+      
+      // Existing redirect URL check
+      if (isRedirectUrl(urlRecord.link)) {
+        log.warning(`Skipping redirect URL: ${urlRecord.link}`);
+        const { error: updateError } = await supabase
+          .from(config.table)
+          .update({
+            archived_at: new Date().toISOString(),
+            archive_url: null,
+            last_checked: new Date().toISOString(),
+            status: 'skipped_redirect'
+          })
+          .eq('id', urlRecord.id);
+
+        if (updateError) {
+          log.error(`Failed to update database for skipped URL ${urlRecord.link}:`, updateError);
+        }
+        
+        processedCount++;
+        continue;
+      }
+
       log.info(`Current rate limit delay: ${RATE_LIMITS.currentDelay}ms`, true);
 
       let archiveUrl = null;
