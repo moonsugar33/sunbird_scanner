@@ -75,7 +75,7 @@ const RATE_LIMITS = {
 
 // Add these constants at the top with other constants
 const RETRY_CONFIG = {
-  maxAttempts: 3,
+  maxAttempts: 2,
   // Error categories and their retry strategies
   errorCategories: {
     RATE_LIMIT: {
@@ -83,6 +83,13 @@ const RETRY_CONFIG = {
       shouldRetry: true,
       backoffMultiplier: 2,
       baseDelay: RATE_LIMITS.baseDelay * 2
+    },
+    FORBIDDEN: {
+      shouldRetry: false
+    },
+    CLOUDFLARE_ERROR: {
+      shouldRetry: false,
+      requiresProxy: true
     },
     TIMEOUT: {
       // Timeout errors
@@ -112,6 +119,8 @@ const RETRY_CONFIG = {
 // Add this new function to categorize errors
 function categorizeError(error, responseStatus) {
   if (responseStatus === 429) return 'RATE_LIMIT';
+  if (responseStatus === 403) return 'FORBIDDEN';
+  if (responseStatus === 523) return 'CLOUDFLARE_ERROR';
   if (error.name === 'AbortError') return 'TIMEOUT';
   if (responseStatus >= 500) return 'SERVER_ERROR';
   if (responseStatus >= 400) return 'CLIENT_ERROR';
@@ -340,6 +349,83 @@ async function getConfig() {
   };
 }
 
+// Add these status constants at the top of the file
+const STATUS_CODES = {
+  // Success states
+  SUCCESS: 'success',
+  PARTIAL_SUCCESS: 'partial_success',
+  
+  // Skip states
+  SKIPPED_NULL: 'skipped_null',
+  SKIPPED_REDIRECT: 'skipped_redirect',
+  SKIPPED_FORBIDDEN: 'skipped_forbidden',
+  
+  // Error states
+  ERROR_TIMEOUT: 'error_timeout',
+  ERROR_NETWORK: 'error_network',
+  ERROR_RATE_LIMIT: 'error_rate_limit',
+  ERROR_SERVER: 'error_server',
+  ERROR_UNKNOWN: 'error_unknown',
+  
+  // Cloudflare specific
+  CLOUDFLARE_BLOCKED: 'cloudflare_blocked',
+  CLOUDFLARE_CHALLENGE: 'cloudflare_challenge',
+  
+  // Site specific
+  SITE_REMOVED: 'site_removed',
+  SITE_PRIVATE: 'site_private',
+  SITE_SUSPENDED: 'site_suspended',
+  
+  // Processing states
+  PENDING: 'pending',
+  IN_PROGRESS: 'in_progress',
+  FAILED: 'failed',
+  RETRY_SCHEDULED: 'retry_scheduled'
+};
+
+// Update the database update functions to use these status codes
+async function updateCampaignData(id, archiveUrl, tableName, target, raised, name, currency, status = STATUS_CODES.SUCCESS) {
+  const { error: updateError } = await supabase
+    .from(tableName)
+    .update({
+      archived_at: new Date().toISOString(),
+      archive_url: archiveUrl,
+      last_checked: new Date().toISOString(),
+      status: status,
+      status_details: {
+        last_status: status,
+        status_history: [], // Could track status changes here
+        last_error: null,
+        retry_count: 0,
+        last_success: new Date().toISOString()
+      }
+    })
+    .eq('id', id);
+
+  if (updateError) {
+    log.error(`Failed to update database for ID ${id}:`, updateError);
+    return false;
+  }
+  return true;
+}
+
+// Update the fetchCampaignUrls function to handle more status codes
+async function fetchCampaignUrls() {
+  try {
+    const { data, error } = await supabase
+      .from(config.table)
+      .select('id, link')
+      .or(`status.not.eq.cloudflare_blocked,retry_after.lt.${new Date().toISOString()}`)
+      .order('id', { ascending: true });
+
+    if (error) throw error;
+    return data;
+  } catch (error) {
+    console.error('Error fetching URLs:', error);
+    return [];
+  }
+}
+
 // Update the archiveLink function to use the new retry mechanism
 async function archiveLink(url, attempt = 1, captureOutlinks = false) {
   // URL validation remains the same
@@ -452,44 +538,18 @@ async function main() {
     for (const urlRecord of urls) {
       log.info(`[${processedCount + 1}/${urls.length}] Processing URL: ${urlRecord.link}`);
       
-      // Add check for null/empty links
+      // Check for null/empty links
       if (!urlRecord.link) {
         log.warning(`Skipping null/empty URL for ID: ${urlRecord.id}`);
-        const { error: updateError } = await supabase
-          .from(config.table)
-          .update({
-            archived_at: new Date().toISOString(),
-            archive_url: null,
-            last_checked: new Date().toISOString(),
-            status: 'skipped_null'
-          })
-          .eq('id', urlRecord.id);
-
-        if (updateError) {
-          log.error(`Failed to update database for null URL ID ${urlRecord.id}:`, updateError);
-        }
-        
+        await updateCampaignData(urlRecord.id, null, config.table, null, null, null, null, STATUS_CODES.SKIPPED_NULL);
         processedCount++;
         continue;
       }
       
-      // Existing redirect URL check
+      // Check for redirect URLs
       if (isRedirectUrl(urlRecord.link)) {
         log.warning(`Skipping redirect URL: ${urlRecord.link}`);
-        const { error: updateError } = await supabase
-          .from(config.table)
-          .update({
-            archived_at: new Date().toISOString(),
-            archive_url: null,
-            last_checked: new Date().toISOString(),
-            status: 'skipped_redirect'
-          })
-          .eq('id', urlRecord.id);
-
-        if (updateError) {
-          log.error(`Failed to update database for skipped URL ${urlRecord.link}:`, updateError);
-        }
-        
+        await updateCampaignData(urlRecord.id, null, config.table, null, null, null, null, STATUS_CODES.SKIPPED_REDIRECT);
         processedCount++;
         continue;
       }
@@ -497,37 +557,62 @@ async function main() {
       log.info(`Current rate limit delay: ${RATE_LIMITS.currentDelay}ms`, true);
 
       let archiveUrl = null;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        if (attempt > 1) {
-          const retryDelay = RATE_LIMITS.currentDelay * attempt;
-          log.info(`Waiting ${retryDelay}ms before retry ${attempt}`);
-          await new Promise(resolve => setTimeout(resolve, retryDelay));
+      try {
+        archiveUrl = await archiveLink(urlRecord.link, 1, config.captureOutlinks);
+        
+        if (archiveUrl) {
+          log.success(`Successfully archived: ${urlRecord.link} -> ${archiveUrl}`);
+          await updateCampaignData(urlRecord.id, archiveUrl, config.table, null, null, null, null, STATUS_CODES.SUCCESS);
         }
-
-        archiveUrl = await archiveLink(urlRecord.link, attempt, config.captureOutlinks);
-        if (archiveUrl) break;
+      } catch (error) {
+        if (error.status === 403) {
+          await updateCampaignData(urlRecord.id, null, config.table, null, null, null, null, STATUS_CODES.SKIPPED_FORBIDDEN);
+        } else if (error.status === 523) {
+          await updateCampaignData(
+            urlRecord.id,
+            null,
+            config.table,
+            null,
+            null,
+            null,
+            null,
+            STATUS_CODES.CLOUDFLARE_BLOCKED,
+            {
+              retry_after: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+              cloudflare_details: {
+                blocked_at: new Date().toISOString(),
+                retry_count: (urlRecord.status_details?.cloudflare_details?.retry_count || 0) + 1
+              }
+            }
+          );
+        } else if (error.name === 'TimeoutError' || error.message.includes('timeout')) {
+          await updateCampaignData(urlRecord.id, null, config.table, null, null, null, null, STATUS_CODES.ERROR_TIMEOUT);
+        } else if (error.status === 429) {
+          await updateCampaignData(urlRecord.id, null, config.table, null, null, null, null, STATUS_CODES.ERROR_RATE_LIMIT);
+        } else if (error.status >= 500) {
+          await updateCampaignData(urlRecord.id, null, config.table, null, null, null, null, STATUS_CODES.ERROR_SERVER);
+        } else {
+          await updateCampaignData(
+            urlRecord.id,
+            null,
+            config.table,
+            null,
+            null,
+            null,
+            null,
+            STATUS_CODES.ERROR_UNKNOWN,
+            {
+              error_details: {
+                message: error.message,
+                code: error.status,
+                timestamp: new Date().toISOString()
+              }
+            }
+          );
+        }
       }
 
-      if (archiveUrl) {
-        log.success(`Successfully archived: ${urlRecord.link} -> ${archiveUrl}`);
-        const { error: updateError } = await supabase
-          .from(config.table)
-          .update({
-            archived_at: new Date().toISOString(),
-            archive_url: archiveUrl,
-            last_checked: new Date().toISOString(),
-          })
-          .eq('id', urlRecord.id);
-
-        if (updateError) {
-          log.error(`Failed to update database for ${urlRecord.link}:`, updateError);
-          continue;
-        }
-      } else {
-        log.error(`Failed to archive after 3 attempts: ${urlRecord.link}`);
-      }
-
-      // Always wait between requests to respect rate limit
+      // Wait between requests
       log.info(`Waiting ${RATE_LIMITS.currentDelay}ms before next request`);
       await new Promise(resolve => setTimeout(resolve, RATE_LIMITS.currentDelay));
       processedCount++;
