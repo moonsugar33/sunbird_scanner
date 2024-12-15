@@ -14,18 +14,28 @@ dotenv.config();
 
 // Function to detect browser executable
 const detectBrowserExecutable = () => {
-  if (process.platform !== 'linux') return undefined;
+  // Return undefined for non-Linux/Windows platforms
+  if (!['linux', 'win32'].includes(process.platform)) return undefined;
   
-  const paths = [
+  const paths = process.platform === 'linux' ? [
     '/usr/bin/chromium',           // Debian/Ubuntu
     '/usr/bin/chromium-browser',   // Ubuntu/Debian alternative
     '/usr/bin/google-chrome',      // Chrome fallback
     '/snap/bin/chromium',          // Snap package
+  ] : [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files\\Chromium\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Chromium\\Application\\chrome.exe',
+    // Add Edge as fallback for Windows
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
   ];
   
   const foundPath = paths.find(path => fs.existsSync(path));
   if (!foundPath) {
-    console.warn('⚠️ No Chromium/Chrome executable found. Please install chromium-browser or google-chrome');
+    const platform = process.platform === 'win32' ? 'Windows' : 'Linux';
+    console.warn(`⚠️ No Chrome/Chromium executable found on ${platform}. Please install Chrome, Chromium, or Edge`);
   }
   return foundPath;
 };
@@ -116,6 +126,11 @@ const SHARED_CONFIG = {
         '--disable-accelerated-2d-canvas',
         '--disable-gl-drawing-for-tests',
         '--use-gl=swiftshader'
+      ] : process.platform === 'win32' ? [
+        '--disable-gpu-sandbox',
+        '--disable-win32k-lockdown',
+        '--no-zygote',
+        '--disable-d3d11'
       ] : [
         '--disable-d3d11'
       ])
@@ -1054,7 +1069,7 @@ class FundraisingScanner {
         } catch (error) {
           retryCount++;
           if (retryCount === maxRetries) throw error;
-          this.logger.warn(`  �� Retry ${retryCount}/${maxRetries}: ${error.message}`);
+          this.logger.warn(`  ↻ Retry ${retryCount}/${maxRetries}: ${error.message}`);
           await this.delay(2000 * retryCount);
         }
       }
