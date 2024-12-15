@@ -34,8 +34,8 @@ const log = {
 
 // Adjust rate limit constants for 15 RPM
 const RATE_LIMITS = {
-  baseDelay: 4000,
-  maxDelay: 60000,
+  baseDelay: 5000,
+  maxDelay: 120000,
   backoffFactor: 2,
   successReduceFactor: 0.9,
   currentDelay: 4000,
@@ -75,7 +75,7 @@ const RATE_LIMITS = {
 
 // Add these constants at the top with other constants
 const RETRY_CONFIG = {
-  maxAttempts: 2,
+  maxAttempts: 3,
   // Error categories and their retry strategies
   errorCategories: {
     RATE_LIMIT: {
@@ -112,12 +112,19 @@ const RETRY_CONFIG = {
       shouldRetry: true,
       backoffMultiplier: 1.5,
       baseDelay: RATE_LIMITS.baseDelay
+    },
+    CLOUDFLARE_520: {
+      // Add specific handling for 520 errors
+      shouldRetry: true,
+      backoffMultiplier: 4, // More aggressive backoff
+      baseDelay: RATE_LIMITS.baseDelay * 3
     }
   }
 };
 
 // Add this new function to categorize errors
 function categorizeError(error, responseStatus) {
+  if (responseStatus === 520) return 'CLOUDFLARE_520';
   if (responseStatus === 429) return 'RATE_LIMIT';
   if (responseStatus === 403) return 'FORBIDDEN';
   if (responseStatus === 523) return 'CLOUDFLARE_ERROR';
@@ -380,7 +387,8 @@ const STATUS_CODES = {
   PENDING: 'pending',
   IN_PROGRESS: 'in_progress',
   FAILED: 'failed',
-  RETRY_SCHEDULED: 'retry_scheduled'
+  RETRY_SCHEDULED: 'retry_scheduled',
+  CLOUDFLARE_520: 'cloudflare_520'
 };
 
 // Update the database update functions to use these status codes
@@ -567,7 +575,7 @@ async function main() {
       } catch (error) {
         if (error.status === 403) {
           await updateCampaignData(urlRecord.id, null, config.table, null, null, null, null, STATUS_CODES.SKIPPED_FORBIDDEN);
-        } else if (error.status === 523) {
+        } else if (error.status === 520) {
           await updateCampaignData(
             urlRecord.id,
             null,
@@ -576,15 +584,19 @@ async function main() {
             null,
             null,
             null,
-            STATUS_CODES.CLOUDFLARE_BLOCKED,
+            STATUS_CODES.CLOUDFLARE_520,
             {
-              retry_after: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+              retry_after: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(), // 2 hour cooldown
               cloudflare_details: {
                 blocked_at: new Date().toISOString(),
                 retry_count: (urlRecord.status_details?.cloudflare_details?.retry_count || 0) + 1
               }
             }
           );
+          // Add an extra delay after 520 errors
+          const cooldownDelay = 30000; // 30 seconds
+          log.warning(`Encountered 520 error, cooling down for ${cooldownDelay}ms`);
+          await new Promise(resolve => setTimeout(resolve, cooldownDelay));
         } else if (error.name === 'TimeoutError' || error.message.includes('timeout')) {
           await updateCampaignData(urlRecord.id, null, config.table, null, null, null, null, STATUS_CODES.ERROR_TIMEOUT);
         } else if (error.status === 429) {
