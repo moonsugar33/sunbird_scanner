@@ -28,3 +28,4 @@ pids
 *.swp
 *.swo
 .DS_Store 
+tools/google-sheets/service_account.json
