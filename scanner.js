@@ -658,7 +658,7 @@ class FundraisingScanner {
     }
   }
 
-  async updateCampaignData(id, target, raised, name, currency) {
+  async updateCampaignData(id, target, raised, name, currency, donations) {
     const maxRetries = 3;
     let attempt = 0;
     
@@ -688,6 +688,7 @@ class FundraisingScanner {
             title: name || null,
             currency: currency || null,
             short: shortUrl,
+            donations: parseInt(donations) || null,
             updated_at: new Date().toISOString()
           })
           .eq('id', id);
@@ -950,17 +951,19 @@ class FundraisingScanner {
           const currencyCode = data.target?.currency || 'AUD';
           const currencySymbol = SHARED_CONFIG.CURRENCY_SYMBOLS[currencyCode] || currencyCode;
           const title = data.title || '';
+          const donations = data.donations?.totalCount || 0;
 
           this.logger.info(`└─📊 ${title.substring(0, 40)}${title.length > 40 ? '...' : ''}`);
           this.logger.info(`  ├─💰 ${currencySymbol}${raised} of ${currencySymbol}${target}`);
-          this.logger.info(`  └─👥 ${data.donations?.totalCount || 0} donations`);
+          this.logger.info(`  └─👥 ${donations} donations`);
 
           const updated = await this.updateCampaignData(
             campaign.id, 
             target || null, 
             raised || null, 
             title, 
-            currencyCode  // Store 3-letter code in database
+            currencyCode,
+            donations
           );
 
           if (updated) {
@@ -1040,7 +1043,7 @@ class FundraisingScanner {
           // Parse the data
           const raised = this.parseRaisedAmount(data.raisedText);
           const goal = this.parseTargetAmount(data.goalText);
-          const supporters = this.parseGoFundMeSupporters(data.supportersText);
+          const donations = this.parseGoFundMeSupporters(data.supportersText);
 
           // Ensure consistent currency between raised and goal
           const currencyCode = raised.currency || goal.currency;
@@ -1049,7 +1052,7 @@ class FundraisingScanner {
           // Log the extracted data
           this.logger.info(`└─📊 ${data.title.substring(0, 40)}${data.title.length > 40 ? '...' : ''}`);
           this.logger.info(`  ├─💰 ${currencySymbol}${raised.amount} of ${currencySymbol}${goal.amount}`);
-          this.logger.info(`  └─👥 ${supporters || 0} donations`);
+          this.logger.info(`  └─👥 ${donations || 0} donations`);
 
           // Update database with consistent currency code
           const updated = await this.updateCampaignData(
@@ -1057,7 +1060,8 @@ class FundraisingScanner {
             goal.amount, 
             raised.amount, 
             data.title, 
-            currencyCode  // Store 3-letter code in database
+            currencyCode,
+            donations
           );
 
           if (updated) {
