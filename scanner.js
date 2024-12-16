@@ -460,6 +460,8 @@ class FundraisingScanner {
       failureCount: 0,
       skippedCount: 0,
       notFoundCount: 0,
+      pausedCount: 0,
+      zeroDonationsCount: 0,
       responseTimesMs: [],
       errors: {},
       memoryUsage: [],
@@ -1025,6 +1027,59 @@ class FundraisingScanner {
         return false;
       }
 
+      // Check for paused campaign banner
+      const isPaused = await page.evaluate(() => {
+        const banner = document.querySelector('.hrt-promo-banner-content');
+        if (!banner) return false;
+        
+        const pausedPhrases = [
+          'no longer accepting donations',
+          'disabled new donations',
+          'The organiser has disabled new donations'
+        ];
+        
+        return pausedPhrases.some(phrase => 
+          banner.textContent?.toLowerCase().includes(phrase.toLowerCase())
+        );
+      });
+
+      if (isPaused) {
+        this.logger.warn(`  └─⏸️ Campaign is paused (not accepting donations)`);
+        // Update database to mark as paused
+        await this.supabase
+          .from(this.config.tableName)
+          .update({
+            is_paused: true,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', campaign.id);
+        
+        this.metrics.pausedCount = (this.metrics.pausedCount || 0) + 1;
+        return false;
+      }
+
+      // Check for zero donations
+      const hasNoDonations = await page.evaluate(() => {
+        const zeroDonationsElement = document.querySelector('.hrt-avatar-lockup-content');
+        return zeroDonationsElement?.textContent?.includes('Become the first supporter') || false;
+      });
+
+      if (hasNoDonations) {
+        this.logger.info(`  └─💰 Campaign has no donations yet`);
+        // Update database to mark zero donations
+        await this.supabase
+          .from(this.config.tableName)
+          .update({
+            donations: 0,
+            raised: 0,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', campaign.id);
+        
+        this.metrics.zeroDonationsCount = (this.metrics.zeroDonationsCount || 0) + 1;
+        return true; // Still count as successful scan
+      }
+
       if (!response?.ok()) throw new Error(`Invalid response: ${response?.status()}`);
 
       // Extract and process data with retries
@@ -1178,6 +1233,8 @@ class FundraisingScanner {
     console.log(`❌ Failed: ${this.metrics.failureCount}`);
     console.log(`⏭️ Skipped: ${this.metrics.skippedCount}`);
     console.log(`⚠️ Not Found: ${this.metrics.notFoundCount}`);
+    console.log(`⏸️ Paused: ${this.metrics.pausedCount}`);
+    console.log(`💰 Zero Donations: ${this.metrics.zeroDonationsCount}`);
     console.log(`️ Total Runtime: ${minutes}m ${seconds}s`);
     
     if (this.failedScans.items.length > 0) {
@@ -1219,6 +1276,8 @@ class FundraisingScanner {
       `❌ Failed: ${this.metrics.failureCount}`,
       `⏭️ Skipped: ${this.metrics.skippedCount}`,
       `⚠️ Not Found: ${this.metrics.notFoundCount}`,
+      `⏱️ Paused: ${this.metrics.pausedCount}`,
+      `💰 Zero Donations: ${this.metrics.zeroDonationsCount}`,
       `⏱️ Runtime: ${minutes}m ${seconds}s`,
       '```'
     ].join('\n');
