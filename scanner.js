@@ -27,7 +27,7 @@ const detectBrowserExecutable = () => {
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files\\Chromium\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Chromium\\Application\\chrome.exe',
-    // Add Edge as fallback for Windows
+    // Add Edge as fallback for Wi  ndows
     'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
     'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
   ];
@@ -466,7 +466,8 @@ class FundraisingScanner {
       errors: {},
       memoryUsage: [],
       browserCrashes: 0,
-      avgResponseTime: 0
+      avgResponseTime: 0,
+      notFoundLinks: [], // Update to store title
     };
     
     // Initialize failed scans tracking
@@ -529,11 +530,7 @@ class FundraisingScanner {
       console.log('\n\n🛑 Graceful shutdown initiated...');
       this.setTerminalTitle('Scanner - Shutting down');
       this.isShuttingDown = true;
-      
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      
-      console.log('👋 Shutdown complete');
-      process.exit(0);
+      await this.cleanup(true);
     });
   }
 
@@ -809,7 +806,7 @@ class FundraisingScanner {
     };
 
     // Handle K suffix
-    const kSuffixMatch = text.match(/([€$£¥₹₽₪₱₩R$]|[Kk]r\.?|EUR|USD|GBP)?\s*([\d,. ]+)[kK]\b/i);
+    const kSuffixMatch = text.match(/([€$£¥₹₽₱₩R$]|[Kk]r\.?|EUR|USD|GBP)?\s*([\d,. ]+)[kK]\b/i);
     if (kSuffixMatch) {
       const amount = normalizeAmount(kSuffixMatch[2], true);
       const rawCurrency = kSuffixMatch[1]?.trim().toUpperCase() || 'EUR';
@@ -1014,6 +1011,13 @@ class FundraisingScanner {
       // Handle 404 responses
       if (response.status() === 404) {
         this.logger.warn(`  └─🚫 Campaign no longer exists (404)`);
+        // Store the 404 link with title
+        this.metrics.notFoundLinks.push({
+          id: campaign.id,
+          url: campaign.link,
+          title: await page.title() || 'Unknown Campaign' // Get the page title
+        });
+        
         // Update database to mark as dead URL
         await this.supabase
           .from(this.config.tableName)
@@ -1237,8 +1241,17 @@ class FundraisingScanner {
     console.log(`💰 Zero Donations: ${this.metrics.zeroDonationsCount}`);
     console.log(`️ Total Runtime: ${minutes}m ${seconds}s`);
     
+    // Add 404 links if any exist
+    if (this.metrics.notFoundLinks.length > 0) {
+        console.log('\n404 Links:');
+        this.metrics.notFoundLinks.forEach(link => {
+            const title = link.title || `Campaign ${link.id}`;
+            console.log(`- ID ${link.id}: ${title} \x1b[34m\x1b[4m${link.url}\x1b[0m`);
+        });
+    }
+    
     if (this.failedScans.items.length > 0) {
-      console.log(this.generateFailedScansReport());
+        console.log(this.generateFailedScansReport());
     }
     
     console.log('='.repeat(50) + '\n');
@@ -1269,29 +1282,67 @@ class FundraisingScanner {
     const minutes = Math.floor(duration / 60000);
     const seconds = ((duration % 60000) / 1000).toFixed(1);
     
-    const summaryMessage = [
+    let summaryMessage = [
       '**📊 Scan Summary**',
       '```',
       `✅ Successful: ${this.metrics.successCount}`,
       `❌ Failed: ${this.metrics.failureCount}`,
       `⏭️ Skipped: ${this.metrics.skippedCount}`,
       `⚠️ Not Found: ${this.metrics.notFoundCount}`,
-      `⏱️ Paused: ${this.metrics.pausedCount}`,
+      `⏸️ Paused: ${this.metrics.pausedCount}`,
       `💰 Zero Donations: ${this.metrics.zeroDonationsCount}`,
       `⏱️ Runtime: ${minutes}m ${seconds}s`,
       '```'
-    ].join('\n');
+    ];
 
-    // Use red color for failed scans, green for successful
-    const color = this.metrics.failureCount > 0 ? 0xff0000 : 0x00ff00;
+    // Add 404 links if any exist
+    if (this.metrics.notFoundLinks.length > 0) {
+        summaryMessage.push('\n**404 Links:**');
+        this.metrics.notFoundLinks.forEach(link => {
+            // Use the title as the link text, fallback to ID if no title
+            const linkText = link.title || `Campaign ${link.id}`;
+            summaryMessage.push(`• ID ${link.id}: [${linkText}](${link.url})`);
+        });
+    }
+
+    // Use red color for failed scans or 404s, green for successful
+    const color = (this.metrics.failureCount > 0 || this.metrics.notFoundLinks.length > 0) ? 0xff0000 : 0x00ff00;
     
-    await this.sendDiscordWebhook(summaryMessage, color);
+    await this.sendDiscordWebhook(summaryMessage.join('\n'), color);
   }
 
+  // Add this new method to handle cleanup
+  async cleanup(exitAfter = true) {
+    try {
+        // Display summary and send to Discord only once
+        this.displaySummary();
+        await this.sendScanSummaryToDiscord();
+        
+        // Clean up
+        console.log('🧹 Cleaning up...');
+        if (global.gc) {
+            global.gc();
+        }
+        
+        if (exitAfter) {
+            // Use setTimeout to ensure all async operations complete
+            setTimeout(() => {
+                process.exit(0);
+            }, 1000);
+        }
+    } catch (err) {
+        console.error('Error during cleanup:', err);
+        if (exitAfter) {
+            process.exit(1);
+        }
+    }
+  }
+
+  // Update the run method's finally block
   async run({ startIndex = 1, endIndex = null }) {
     let browser = null;
     let pageCount = 0;
-    const MAX_PAGES_BEFORE_RESTART = 10; // Reduced from 25
+    const MAX_PAGES_BEFORE_RESTART = 10;
     
     try {
       // Enhanced browser launch with better error handling
@@ -1314,91 +1365,76 @@ class FundraisingScanner {
         'Launching browser'
       );
 
-      try {
-        this.displayLogo();
-        
-        const campaigns = await this.fetchCampaignUrls();
-        if (!campaigns?.length) {
-          await this.sendDiscordWebhook('️ No campaigns found to process', 0xffff00);
-          console.log('No campaigns found to process');
-          return;
-        }
+      this.displayLogo();
+      
+      const campaigns = await this.fetchCampaignUrls();
+      if (!campaigns?.length) {
+        await this.sendDiscordWebhook('️ No campaigns found to process', 0xffff00);
+        console.log('No campaigns found to process');
+        return;
+      }
 
-        const campaignsToProcess = campaigns.slice(
-          startIndex - 1,
-          endIndex || campaigns.length
-        );
+      const campaignsToProcess = campaigns.slice(
+        startIndex - 1,
+        endIndex || campaigns.length
+      );
 
-          console.log(`Found ${campaigns.length} total campaigns`);
-          console.log(`Processing campaigns from #${startIndex} to #${endIndex || campaigns.length}\n`);
+        console.log(`Found ${campaigns.length} total campaigns`);
+        console.log(`Processing campaigns from #${startIndex} to #${endIndex || campaigns.length}\n`);
 
-          for (let i = 0; i < campaignsToProcess.length; i++) {
-            if (this.isShuttingDown) {
-              console.log('🛑 Shutdown requested, stopping gracefully...');
-              break;
-            }
-            
-            const campaign = campaignsToProcess[i];
-            const current = i + 1;
-            const percentage = Math.round((current / campaignsToProcess.length) * 100);
-            
-            console.log(`\n--- Campaign ${current}/${campaignsToProcess.length} (${percentage}%) ---`);
-            console.log(`ID: ${campaign.id} | URL: ${campaign.link}`);
-            
-            await this.scrapeCampaign(campaign, browser);
-            
-            pageCount++;
-            
-            // More aggressive cleanup strategy
-            if (pageCount >= MAX_PAGES_BEFORE_RESTART) {
-              console.log('🔄 Performing browser restart...');
-              await browser.close();
-              await this.delay(1000);
-              browser = await puppeteer.launch(SHARED_CONFIG.BROWSER_CONFIG);
-              pageCount = 0;
-              
-              // Force garbage collection if available
-              if (global.gc) {
-                global.gc();
-              }
-            }
+        for (let i = 0; i < campaignsToProcess.length; i++) {
+          if (this.isShuttingDown) {
+            console.log('🛑 Shutdown requested, stopping gracefully...');
+            break;
           }
           
-        } catch (error) {
-          // Send error notification
-          await this.sendDiscordWebhook(
-            `❌ Error during scanning:\n\`\`\`\n${error.message}\n\`\`\``,
-            0xff0000
-          );
-          console.error('Error during scanning:', error);
-          throw error;
-        } finally {
-          if (browser) {
-            try {
-              await browser.close();
-            } catch (err) {
-              console.error('Error closing browser:', err);
+          const campaign = campaignsToProcess[i];
+          const current = i + 1;
+          const percentage = Math.round((current / campaignsToProcess.length) * 100);
+          
+          console.log(`\n--- Campaign ${current}/${campaignsToProcess.length} (${percentage}%) ---`);
+          console.log(`ID: ${campaign.id} | URL: ${campaign.link}`);
+          
+          await this.scrapeCampaign(campaign, browser);
+          
+          pageCount++;
+          
+          // More aggressive cleanup strategy
+          if (pageCount >= MAX_PAGES_BEFORE_RESTART) {
+            console.log('🔄 Performing browser restart...');
+            await browser.close();
+            await this.delay(1000);
+            browser = await puppeteer.launch(SHARED_CONFIG.BROWSER_CONFIG);
+            pageCount = 0;
+            
+            // Force garbage collection if available
+            if (global.gc) {
+              global.gc();
             }
           }
-          this.displaySummary();
-          // Send final summary to Discord
-          await this.sendScanSummaryToDiscord();
         }
+        
       } catch (error) {
-        // Send critical error notification
+        // Send error notification
         await this.sendDiscordWebhook(
-          `💥 Critical error:\n\`\`\`\n${error.message}\n\`\`\``,
+          `❌ Error during scanning:\n\`\`\`\n${error.message}\n\`\`\``,
           0xff0000
         );
+        console.error('Error during scanning:', error);
         throw error;
-      }
+      } finally {
+        if (browser) {
+            await browser.close();
+        }
+        await this.cleanup(!this.isShuttingDown); // Only exit if not already shutting down
     }
   }
+}
 
-  // Export the scanner and configurations
-  export {
+// Export statement should be at the end of the file, outside the class
+export {
     FundraisingScanner,
     SCANNER_CONFIGS,
     SHARED_CONFIG,
     SITE_CONFIGS
-  }; 
+}; 
