@@ -398,7 +398,6 @@ async function updateCampaignData(id, archiveUrl, tableName, target, raised, nam
     .update({
       archived_at: new Date().toISOString(),
       archive_url: archiveUrl,
-      last_checked: new Date().toISOString(),
       status: status,
       status_details: {
         last_status: status,
