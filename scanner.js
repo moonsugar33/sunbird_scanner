@@ -725,59 +725,45 @@ class FundraisingScanner {
       raw: null
     };
 
-    // Sanitize input
+    // Sanitize input and handle HTML
     text = text.toString().trim();
     
     try {
-      // First, try to match the GoFundMe specific HTML format
-      const gfmMatch = text.match(
-        /<span[^>]*>([\d,. ]+)<\/span>\s*<span[^>]*>([A-Z]{3}|[Kk][Rr]?)\s*<\/span>/i
-      );
-
-      if (gfmMatch) {
-        const amount = gfmMatch[1].replace(/[,\s]/g, '');
-        const rawCurrency = gfmMatch[2].trim().toUpperCase();
+      // Handle GoFundMe dollar amounts specifically
+      // Case 1: "$X USD raised" (explicit USD)
+      // Case 2: "$X raised" (implicit AUD)
+      const dollarMatch = text.match(/\$\s*([\d,. ]+)(?:\s+([A-Z]{3}))?\s+raised/i);
+      if (dollarMatch) {
+        const amount = dollarMatch[1].replace(/[,\s]/g, '');
+        // If no currency code is specified after the amount, assume AUD
+        const currencyCode = dollarMatch[2]?.toUpperCase() || 'AUD';
+        
         return {
-          currency: SHARED_CONFIG.CURRENCY_MAPPING[rawCurrency] || rawCurrency,
+          currency: currencyCode,
           amount: amount,
-          raw: gfmMatch[0]
+          raw: dollarMatch[0]
         };
       }
 
-      // Then try to match post-amount currencies
-      const postAmountMatch = text.match(
-        /([\d,. ]+)\s*([A-Z]{3}|[Kk][Rr]?)\b/i
-      );
-
-      if (postAmountMatch) {
-        const amount = postAmountMatch[1].replace(/[,\s]/g, '');
-        const rawCurrency = postAmountMatch[2].trim().toUpperCase();
+      // Handle other currency symbols without modification
+      const otherCurrencyMatch = text.match(/([€£¥₹₽₪₱₩R$]|[Kk]r\.?)\s*([\d,. ]+)/);
+      if (otherCurrencyMatch) {
+        const symbol = otherCurrencyMatch[1];
+        const amount = otherCurrencyMatch[2].replace(/[,\s]/g, '');
         return {
-          currency: SHARED_CONFIG.CURRENCY_MAPPING[rawCurrency] || rawCurrency,
+          currency: SHARED_CONFIG.CURRENCY_MAPPING[symbol] || symbol,
           amount: amount,
-          raw: postAmountMatch[0]
+          raw: otherCurrencyMatch[0]
         };
       }
 
-      // Finally, try to match pre-amount currencies
-      const preAmountMatch = text.match(
-        /([€$£¥₹₽₪₱₩R$]|[Kk]r\.?|EUR|USD|GBP)\s*([\d,.]+)/i
-      );
-
-      if (preAmountMatch) {
-        const amount = preAmountMatch[2].replace(/[,\s]/g, '');
-        const rawCurrency = preAmountMatch[1].trim().toUpperCase();
-        return {
-          currency: SHARED_CONFIG.CURRENCY_MAPPING[rawCurrency] || rawCurrency,
-          amount: amount,
-          raw: preAmountMatch[0]
-        };
-      }
-
+      // Debug: Show if no match found
+      console.log('DEBUG: No currency match found, raw text was:', text);
+      
       return {
         currency: 'Not found',
         amount: 'Not found',
-        raw: text // Return original text for debugging
+        raw: text
       };
     } catch (error) {
       console.error('Error parsing amount:', error);
