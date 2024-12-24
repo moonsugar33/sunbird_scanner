@@ -20,15 +20,13 @@ class DatabaseBackup {
     // Initialize S3 client
     this.s3Client = new S3Client({
       endpoint: `https://${process.env.S3_ENDPOINT}`,
-      region: process.env.S3_REGION,
+      region: 'us-east-1',
       credentials: {
         accessKeyId: process.env.S3_ACCESS_KEY,
         secretAccessKey: process.env.S3_SECRET_KEY
       },
       forcePathStyle: true,
-      tls: true,
-      apiVersion: '2006-03-01',
-      signatureVersion: 'v4'
+      tls: true
     });
 
     // Backup configuration
@@ -156,16 +154,22 @@ class DatabaseBackup {
       const s3Key = `${this.backupConfig.s3Prefix}/${fileName}`;
       const fileBuffer = await fs.readFile(filePath);
       
-      const uploadCommand = new PutObjectCommand({
-        Bucket: this.backupConfig.s3Bucket,
-        Key: s3Key,
-        Body: fileBuffer,
-        ContentType: 'text/plain',
-        ACL: 'private'
-      });
+      try {
+        const uploadCommand = new PutObjectCommand({
+          Bucket: this.backupConfig.s3Bucket,
+          Key: s3Key,
+          Body: fileBuffer,
+          ContentType: 'text/plain',
+          ACL: 'private'
+        });
 
-      await this.s3Client.send(uploadCommand);
-      console.log(`☁️ Uploaded to S3: ${s3Key}`);
+        console.log('Attempting to upload to:', `https://${process.env.S3_ENDPOINT}/${this.backupConfig.s3Bucket}/${s3Key}`);
+        await this.s3Client.send(uploadCommand);
+        console.log(`☁️ Uploaded to Vultr Object Storage: ${s3Key}`);
+      } catch (s3Error) {
+        console.error('S3 Upload Error:', s3Error);
+        throw new Error(`Failed to upload to Vultr Object Storage: ${s3Error.message}`);
+      }
 
       return {
         success: true,
