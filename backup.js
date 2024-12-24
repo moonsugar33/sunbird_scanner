@@ -163,9 +163,9 @@ class DatabaseBackup {
           ACL: 'private'
         });
 
-        console.log('Attempting to upload to:', `https://${process.env.S3_ENDPOINT}/${this.backupConfig.s3Bucket}/${s3Key}`);
+        console.log('🔗 Attempting to upload to:', `https://${process.env.S3_ENDPOINT}/${this.backupConfig.s3Bucket}/${s3Key}`);
         await this.s3Client.send(uploadCommand);
-        console.log(`☁️ Uploaded to Vultr Object Storage: ${s3Key}`);
+        console.log('☁️ Uploaded to Vultr Object Storage:', s3Key);
       } catch (s3Error) {
         console.error('S3 Upload Error:', s3Error);
         throw new Error(`Failed to upload to Vultr Object Storage: ${s3Error.message}`);
