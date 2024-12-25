@@ -887,12 +887,37 @@ class FundraisingScanner {
   }
 
   extractChuffedId(url) {
-    const match = url.match(/chuffed\.org\/project\/(\d+)/);
-    return match ? match[1] : null;
+    // First try to match numeric ID
+    const numericMatch = url.match(/chuffed\.org\/project\/(\d+)/);
+    if (numericMatch) return numericMatch[1];
+    
+    // If no numeric ID, extract the slug
+    const slugMatch = url.match(/chuffed\.org\/project\/([^\/\s]+)/);
+    if (!slugMatch) return null;
+    
+    // Return the slug prefixed with 'slug:' to indicate it needs resolution
+    return `slug:${slugMatch[1]}`;
   }
 
   async fetchChuffedData(projectId) {
     try {
+      // If it's a slug, we need to resolve it first
+      if (projectId.startsWith('slug:')) {
+        const slug = projectId.replace('slug:', '');
+        // Make a request to the page to get the numeric ID
+        const response = await axios.get(`https://chuffed.org/project/${slug}`, {
+          headers: {
+            'accept': 'text/html',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          }
+        });
+        
+        // Extract the numeric ID from the HTML response
+        const idMatch = response.data.match(/campaign\?id=(\d+)/);
+        if (!idMatch) throw new Error('Could not find campaign ID in page');
+        projectId = idMatch[1];
+      }
+
       const response = await axios.post(SITE_CONFIGS.CHUFFED.api.endpoint, [{
         operationName: 'getCampaign',
         variables: { id: parseInt(projectId) },

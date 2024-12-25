@@ -30,11 +30,11 @@ echo.
 :menu
 echo Please select an option:
 echo.
-echo [1] Run Scanner (run.js)
-echo [2] Backup Databases (backup.js)
-echo [3] Archive Pages (tools/internet_archive/archive.js)
-echo [4] Check Sheets URLs (tools/google-sheets/main.py)
-echo [5] Exit
+echo [1] ⚙️ Run Scanner
+echo [2] 💾 Backup Databases 
+echo [3] 📁 Archive Pages 
+echo [4] 📊 Check Sheets URLs 
+echo [5] ❌ Exit
 echo.
 set /p choice="Enter your choice (1-5): "
 
