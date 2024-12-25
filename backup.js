@@ -14,7 +14,15 @@ class DatabaseBackup {
     // Initialize Supabase client
     this.supabase = createClient(
       process.env.SUPABASE_URL,
-      process.env.SUPABASE_ANON_KEY
+      process.env.SUPABASE_ANON_KEY,
+      {
+        auth: {
+          persistSession: false
+        },
+        global: {
+          fetch: fetch
+        }
+      }
     );
 
     // Initialize S3 client

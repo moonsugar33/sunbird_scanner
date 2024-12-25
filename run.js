@@ -1,21 +1,8 @@
 import inquirer from 'inquirer';
-import { spawn } from 'child_process';
 import figlet from 'figlet';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import fs from 'fs/promises';
-import { existsSync } from 'fs';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { FundraisingScanner, SCANNER_CONFIGS } from './scanner.js';
-
-const execAsync = promisify(exec);
-
-// Get current file's directory (needed for ES modules)
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 // Parse command line arguments
 const argv = yargs(hideBin(process.argv))
@@ -49,8 +36,8 @@ const argv = yargs(hideBin(process.argv))
     .help()
     .argv;
 
-// Use path.join for cross-platform path handling
-const CONFIG_PATH = join(__dirname, '.env');
+// Use Bun's path utilities
+const CONFIG_PATH = import.meta.dir + '/.env';
 
 // ASCII Logo display function
 function displayLogo() {
@@ -125,7 +112,11 @@ const questions = [
 async function checkAndInstallDependencies() {
     try {
         console.log('Checking and installing dependencies...');
-        await execAsync('npm install');
+        const proc = Bun.spawn(['bun', 'install'], {
+            stdout: 'inherit',
+            stderr: 'inherit'
+        });
+        await proc.exited;
         console.log('Dependencies installed successfully!\n');
     } catch (error) {
         console.error('Error installing dependencies:', error.message);
@@ -137,8 +128,8 @@ async function checkAndCreateEnvFile() {
     const envPath = '.env';
     
     try {
-        // Check if .env exists
-        if (!existsSync(envPath)) {
+        // Check if .env exists using Bun's file API
+        if (!await Bun.file(envPath).exists()) {
             console.log('No .env file found. Let\'s set it up!\n');
             console.log('You\'ll need your Supabase project credentials for this step.');
             console.log('You can find these in your Supabase project settings under "API".\n');
@@ -150,8 +141,8 @@ async function checkAndCreateEnvFile() {
                 .map(([key, value]) => `${key}=${value}`)
                 .join('\n');
             
-            // Write .env file
-            await fs.writeFile(envPath, envContent);
+            // Write .env file using Bun's file API
+            await Bun.write(envPath, envContent);
             console.log('\n.env file created successfully!\n');
         }
     } catch (error) {

@@ -11,7 +11,15 @@ dotenv.config();
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_ANON_KEY,
+  {
+    auth: {
+      persistSession: false
+    },
+    global: {
+      fetch: fetch
+    }
+  }
 );
 
 // Modern logging utility with optional verbose mode

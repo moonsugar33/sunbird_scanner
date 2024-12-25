@@ -1,16 +1,28 @@
 import puppeteer from 'puppeteer';
 import { createClient } from '@supabase/supabase-js';
-import * as dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import cliProgress from 'cli-progress';
 import figlet from 'figlet';
 import rateLimit from 'express-rate-limit';
 import axios from 'axios';
-import fs from 'fs';
 
-// Configure dotenv
-dotenv.config();
+// Bun has built-in .env support, no need for dotenv
+// Bun's native file system API
+const fs = {
+  existsSync: (path) => {
+    try {
+      return Bun.file(path).size !== undefined;
+    } catch {
+      return false;
+    }
+  },
+  writeFileSync: (path, data) => Bun.write(path, data),
+  appendFileSync: (path, data) => {
+    const file = Bun.file(path);
+    return Bun.write(path, data, { append: true });
+  }
+};
 
 // Function to detect browser executable
 const detectBrowserExecutable = () => {
@@ -108,10 +120,9 @@ const SHARED_CONFIG = {
       '--disable-audio',
       '--disable-notifications',
       '--window-size=1920,1080',
-      '--disable-features=site-per-process',
-      '--js-flags="--max-old-space-size=2048"',
+      '--js-flags="--max-old-space-size=4096"',
       '--single-process',
-      '--disable-javascript-harmony-shipping',
+      '--disable-features=site-per-process',
       '--disable-site-isolation-trials',
       '--disable-features=BlinkRuntimeCallStats',
       '--disable-field-trial-config',
@@ -130,12 +141,13 @@ const SHARED_CONFIG = {
         '--disable-gpu-sandbox',
         '--disable-win32k-lockdown',
         '--no-zygote',
-        '--disable-d3d11'
+        '--disable-d3d11',
+        '--enable-bun-optimizations'
       ] : [
         '--disable-d3d11'
       ])
     ],
-    defaultViewport: { width: 800, height: 600 },
+    defaultViewport: { width: 1920, height: 1080 },
     ignoreHTTPSErrors: true,
     waitForInitialPage: true,
     executablePath: detectBrowserExecutable()
@@ -447,7 +459,15 @@ class FundraisingScanner {
     this.config = SCANNER_CONFIGS[scannerType];
     this.supabase = createClient(
       process.env.SUPABASE_URL,
-      process.env.SUPABASE_ANON_KEY
+      process.env.SUPABASE_ANON_KEY,
+      {
+        auth: {
+          persistSession: false
+        },
+        global: {
+          fetch: fetch
+        }
+      }
     );
     
     this.isShuttingDown = false;
@@ -632,7 +652,7 @@ class FundraisingScanner {
         }).toString()
       };
 
-      const response = await axios(options);
+      const response = await fetch(url, options);
 
       // Accept both 200 and 201 as valid response codes
       if ((response.status === 200 || response.status === 201) && response.data?.data) {
@@ -905,35 +925,39 @@ class FundraisingScanner {
       if (projectId.startsWith('slug:')) {
         const slug = projectId.replace('slug:', '');
         // Make a request to the page to get the numeric ID
-        const response = await axios.get(`https://chuffed.org/project/${slug}`, {
+        const response = await fetch(`https://chuffed.org/project/${slug}`, {
           headers: {
             'accept': 'text/html',
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
           }
         });
         
+        const html = await response.text();
         // Extract the numeric ID from the HTML response
-        const idMatch = response.data.match(/campaign\?id=(\d+)/);
+        const idMatch = html.match(/campaign\?id=(\d+)/);
         if (!idMatch) throw new Error('Could not find campaign ID in page');
         projectId = idMatch[1];
       }
 
-      const response = await axios.post(SITE_CONFIGS.CHUFFED.api.endpoint, [{
-        operationName: 'getCampaign',
-        variables: { id: parseInt(projectId) },
-        query: SITE_CONFIGS.CHUFFED.api.query
-      }], {
+      const response = await fetch(SITE_CONFIGS.CHUFFED.api.endpoint, {
+        method: 'POST',
         headers: {
           'accept': 'application/json',
           'content-type': 'application/json',
-        }
+        },
+        body: JSON.stringify({
+          operationName: 'getCampaign',
+          variables: { id: parseInt(projectId) },
+          query: SITE_CONFIGS.CHUFFED.api.query
+        })
       });
 
-      if (!response.data || !response.data[0]?.data) {
+      const jsonData = await response.json();
+      if (!jsonData?.data?.campaign) {
         throw new Error('Invalid response structure from Chuffed API');
       }
 
-      return response.data[0]?.data;
+      return jsonData.data;
     } catch (error) {
       console.error(`❌ Error fetching data from Chuffed API: ${error.message}`);
       return null;
@@ -1280,8 +1304,14 @@ class FundraisingScanner {
         timestamp: new Date().toISOString()
       };
 
-      await axios.post(process.env.DISCORD_WEBHOOK_URL, {
-        embeds: [embed]
+      await fetch(process.env.DISCORD_WEBHOOK_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          embeds: [embed]
+        })
       });
     } catch (error) {
       console.error('Failed to send Discord webhook:', error.message);
@@ -1312,7 +1342,7 @@ class FundraisingScanner {
         this.metrics.notFoundLinks.forEach(link => {
             // Use the title as the link text, fallback to ID if no title
             const linkText = link.title || `Campaign ${link.id}`;
-            summaryMessage.push(`• ID ${link.id}: [${linkText}](${link.url})`);
+            summaryMessage.push(`�� ID ${link.id}: [${linkText}](${link.url})`);
         });
     }
 

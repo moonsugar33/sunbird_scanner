@@ -9,6 +9,16 @@ echo                             By Sneethan
 echo   ===============================================================
 echo.
 
+:: Check for Bun installation
+where bun >nul 2>nul
+if %ERRORLEVEL% NEQ 0 (
+    echo Bun is not installed! Please install Bun to run the scanner.
+    echo Visit https://bun.sh for installation instructions.
+    echo.
+    pause
+    exit /b
+)
+
 :: Check for Git installation
 where git >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
@@ -40,26 +50,38 @@ set /p choice="Enter your choice (1-5): "
 
 if "%choice%"=="1" (
     echo Running Scanner...
-    node run.js
-    pause
+    bun run.js
+    if %ERRORLEVEL% NEQ 0 (
+        echo Error running scanner. Please check the error message above.
+        pause
+    )
     goto menu
 )
 if "%choice%"=="2" (
     echo Running Database Backup...
-    node backup.js
-    pause
+    bun backup.js
+    if %ERRORLEVEL% NEQ 0 (
+        echo Error running backup. Please check the error message above.
+        pause
+    )
     goto menu
 )
 if "%choice%"=="3" (
     echo Running Internet Archive Tool...
-    node tools/internet_archive/archive.js
-    pause
+    bun tools/internet_archive/archive.js
+    if %ERRORLEVEL% NEQ 0 (
+        echo Error running archive tool. Please check the error message above.
+        pause
+    )
     goto menu
 )
 if "%choice%"=="4" (
     echo Running Google Sheets Checker...
     python tools/google-sheets/main.py
-    pause
+    if %ERRORLEVEL% NEQ 0 (
+        echo Error running sheets checker. Please check the error message above.
+        pause
+    )
     goto menu
 )
 if "%choice%"=="5" (

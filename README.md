@@ -1,4 +1,3 @@
-
 # Sunbird Scanner
 
 
@@ -46,14 +45,20 @@ Git is a tool that helps you download and manage the project code.
 
 ---
 
-### Step 2: Install Node.js
+### Step 2: Install Bun
 
-Node.js allows you to run JavaScript code outside of a browser.
+Bun is a fast all-in-one JavaScript runtime and toolkit.
 
-1. Visit [nodejs.org](https://nodejs.org/).
-2. Download the **LTS (Long Term Support)** version.
-3. Run the installer and follow the setup instructions. Ensure the option to install `npm` (Node Package Manager) is checked.
-4. After installation, open a terminal and type `node --version` and `npm --version` to confirm installation.
+1. Visit [bun.sh](https://bun.sh)
+2. Install Bun using the following command:
+   ```bash
+   # For Windows (PowerShell):
+   powershell -c "irm bun.sh/install.ps1|iex"
+   
+   # For macOS or Linux:
+   curl -fsSL https://bun.sh/install | bash
+   ```
+3. After installation, open a terminal and type `bun --version` to confirm installation.
 
 ---
 
@@ -75,13 +80,13 @@ Node.js allows you to run JavaScript code outside of a browser.
 
 ---
 
-### Step 4: Install Node Modules
+### Step 4: Install Dependencies
 
-Node modules are libraries the project needs to work.
+The project dependencies are managed by Bun.
 
 1. In the project folder, run:
    ```bash
-   npm install
+   bun install
    ```
    This will download and set up everything needed.
 
@@ -126,7 +131,12 @@ Supabase is a service that provides a database and API for your project.
 
 Now, you have everything set up. Run your project using:
 ```bash
-node run.js
+bun run.js
+```
+
+Or use the provided batch script:
+```bash
+run.bat
 ```
 
 ## Acknowledgements
