@@ -2,9 +2,9 @@ import { createClient } from '@supabase/supabase-js';
 import * as dotenv from 'dotenv';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { format } from 'date-fns';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Load environment variables
 dotenv.config();
@@ -18,9 +18,6 @@ class DatabaseBackup {
       {
         auth: {
           persistSession: false
-        },
-        global: {
-          fetch: fetch
         }
       }
     );
@@ -48,7 +45,7 @@ class DatabaseBackup {
 
   async createBackupDir() {
     try {
-      await fs.mkdir(this.backupConfig.backupDir, { recursive: true });
+      await mkdir(this.backupConfig.backupDir, { recursive: true });
     } catch (error) {
       console.error('Error creating backup directory:', error);
       throw error;
@@ -155,12 +152,12 @@ class DatabaseBackup {
       const filePath = path.join(this.backupConfig.backupDir, fileName);
 
       // Save to local file
-      await fs.writeFile(filePath, sql, 'utf8');
+      await writeFile(filePath, sql, 'utf8');
       console.log(`💾 Saved local backup: ${fileName}`);
 
       // Upload to S3
       const s3Key = `${this.backupConfig.s3Prefix}/${fileName}`;
-      const fileBuffer = await fs.readFile(filePath);
+      const fileBuffer = await readFile(filePath);
       
       try {
         const uploadCommand = new PutObjectCommand({
