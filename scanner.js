@@ -933,8 +933,8 @@ class FundraisingScanner {
         });
         
         const html = await response.text();
-        // Extract the numeric ID from the HTML response
-        const idMatch = html.match(/campaign\?id=(\d+)/);
+        // Extract the numeric ID from the HTML response using the campaignInit script
+        const idMatch = html.match(/campaignId:\s*(\d+)/);
         if (!idMatch) throw new Error('Could not find campaign ID in page');
         projectId = idMatch[1];
       }
@@ -1342,7 +1342,7 @@ class FundraisingScanner {
         this.metrics.notFoundLinks.forEach(link => {
             // Use the title as the link text, fallback to ID if no title
             const linkText = link.title || `Campaign ${link.id}`;
-            summaryMessage.push(`�� ID ${link.id}: [${linkText}](${link.url})`);
+            summaryMessage.push(` ID ${link.id}: [${linkText}](${link.url})`);
         });
     }
 
