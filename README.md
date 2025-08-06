@@ -2,20 +2,20 @@
 
 ## What does this do?
 
-Sunbird Scanner is a custom built tool to scrape GoFundMe campaigns using [Puppeteer](https://pptr.dev/), and then reports campaign stats to a [Supabase](https://supabase.com/) table.
+Sunbird Scanner is a custom built tool to scrape GoFundMe campaigns using [Puppeteer](https://pptr.dev/). 
+It then reports campaign stats to a [Supabase](https://supabase.com/) table.
 
 ## Features
 
 - Uses a loader script to support multiple tables
 - Loads links directly from tables, using Supabase API
-- Performant and fast
 - Cross-platform
 - Supports both Chuffed and GoFundMe
 
 
 ## Getting Started
 
-This guide will walk you through the steps needed to set up the project. No prior experience is necessary — just follow the instructions below.
+This guide will walk you through the steps needed to set up the project. No prior experience is necessary - just follow the instructions below.
 
 ---
 
