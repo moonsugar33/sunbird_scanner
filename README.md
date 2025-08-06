@@ -83,6 +83,10 @@ The project dependencies are managed by Bun.
    ```bash
    bun install
    ```
+2. If Bun blocks any lifecycle scripts, run the following command to trust and install them:
+   ```bash
+   bun pm trust --all
+   ```
    This will download and set up everything needed.
 
 ---
