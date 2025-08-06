@@ -1,10 +1,5 @@
 # Sunbird Scanner
 
-
-
-
-![](https://cdn.thebeesnees.lol/scanner-banner.png)
-
 ## What does this do?
 
 Sunbird Scanner is a custom built tool to scrape GoFundMe campaigns using [Puppeteer](https://pptr.dev/), and then reports campaign stats to a [Supabase](https://supabase.com/) table.
@@ -20,7 +15,7 @@ Sunbird Scanner is a custom built tool to scrape GoFundMe campaigns using [Puppe
 
 ## Getting Started
 
-This guide will walk you through the steps needed to set up the project. No prior experience is necessary—just follow the instructions below!
+This guide will walk you through the steps needed to set up the project. No prior experience is necessary — just follow the instructions below.
 
 ---
 
@@ -71,7 +66,7 @@ Bun is a fast all-in-one JavaScript runtime and toolkit.
    ```
 3. Run the following command to clone the project:
    ```bash
-   git clone https://github.com/Sneethan/sunbird_scanner
+   git clone https://github.com/moonsugar33/sunbird_scanner
    ```
 4. Navigate into the project folder:
    ```bash
@@ -143,10 +138,8 @@ run.bat
 
  - [Script made by Sneethan](https://sneethan.xyz)
  - [Databases made by Supabase](https://supabase.com/)
- - [Moral support by soft-sunbird](https://soft-sunbird.tumblr.com/) 
+ - [I am soft-sunbird](https://soft-sunbird.tumblr.com/) 
 
 ## Disclaimers
 
-This code may break at any time if GoFundMe updates their site, and may have bugs and instablities. If you find bugs and know how to fix them, pull requests are very much appreciated.
-
-Happy coding! 🎉
+This code may break at any time if GoFundMe or Chuffed update their sites, and may have bugs and instablities. If you find bugs and know how to fix them, pull requests are very much appreciated.
