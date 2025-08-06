@@ -24,7 +24,7 @@ This guide will walk you through the steps needed to set up the project. No prio
 You'll need the following installed on your computer:
 
 - **Git**: A tool to clone and manage the project code.
-- **Node.js**: A platform for running JavaScript code.
+- **Bun**: A platform for running JavaScript code.
 - **Supabase Account**: A backend-as-a-service platform where you'll set up your database.
 
 ---
@@ -136,8 +136,8 @@ run.bat
 
 ## Acknowledgements
 
- - [Script made by Sneethan](https://sneethan.xyz)
- - [Databases made by Supabase](https://supabase.com/)
+ - [Script by Sneethan](https://sneethan.xyz)
+ - [Databases by Supabase](https://supabase.com/)
  - [I am soft-sunbird](https://soft-sunbird.tumblr.com/) 
 
 ## Disclaimers
