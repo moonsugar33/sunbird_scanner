@@ -116,9 +116,11 @@ Supabase is a service that provides a database and API for your project.
 
 ### Step 6: Get Your Supabase API Keys
 
-1. In your Supabase dashboard, go to **Settings** > **API**.
-2. Copy the **`Project URL`** and **`Anon Key`**.
-3. Leave this page open, and paste the values into your terminal when requested. ``run.js`` will ask for them automatically.
+1. In your Supabase dashboard, go to **Project Settings** > **Data API**.
+2. Note the **`Project URL`** on this page.
+3. Then, navigate to **Project Settings** > **API Keys** and go to the **Legacy API Keys** tab.
+4. Note the **`anon`** (public) key on this page.
+5. Paste these two values into your terminal when requested. ``run.js`` will ask for them automatically.
 
 ---
 
