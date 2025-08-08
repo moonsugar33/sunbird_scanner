@@ -1,16 +1,16 @@
 import puppeteer from 'puppeteer';
+// This program accesses web pages without having to display their contents
 import { createClient } from '@supabase/supabase-js';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-import cliProgress from 'cli-progress';
+// It reads from Supabase and updates data there
 import figlet from 'figlet';
-import rateLimit from 'express-rate-limit';
-import axios from 'axios';
+// It generates an ASCII title when the program starts
 
-// Bun has built-in .env support, no need for dotenv
-// Bun's native file system API
+// Introducing Bun's native file system API
 const fs = {
+  // Declaring the file system "object"
   existsSync: (path) => {
+    // A way to check if a file exists at a given location
+    // Used when checking for browser executables (Linux, Windows, and macOS)
     try {
       return Bun.file(path).size !== undefined;
     } catch {
@@ -18,36 +18,122 @@ const fs = {
     }
   },
   writeFileSync: (path, data) => Bun.write(path, data),
+    // Lets this program create a .txt file
+    // Used when saving scan results for the first time in a day
   appendFileSync: (path, data) => {
+    // Lets this program add data to a .txt file that already exists
+    // Used if multiple scans are run in the same day
     const file = Bun.file(path);
     return Bun.write(path, data, { append: true });
   }
 };
 
-// Function to detect browser executable
+// Locating a compatible browser installation, depending on the operating system
 const detectBrowserExecutable = () => {
-  // Return undefined for non-Linux/Windows platforms
-  if (!['linux', 'win32'].includes(process.platform)) return undefined;
-  
-  const paths = process.platform === 'linux' ? [
-    '/usr/bin/chromium',           // Debian/Ubuntu
-    '/usr/bin/chromium-browser',   // Ubuntu/Debian alternative
-    '/usr/bin/google-chrome',      // Chrome fallback
-    '/snap/bin/chromium',          // Snap package
-  ] : [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files\\Chromium\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Chromium\\Application\\chrome.exe',
-    // Add Edge as fallback for Wi  ndows
-    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-  ];
-  
+  // Detects which operating system is installed
+  if (!['linux', 'win32', 'darwin'].includes(process.platform)) {
+    // If the operating system is not supported, it displays an error message
+    throw new Error(`Unsupported operating system: ${process.platform}.
+      \nThis scanner only supports Linux, Windows, and macOS.
+      \nWhy not try developing this for ${process.platform} yourself?
+      \nTry Cursor here: https://cursor.sh`);
+  }
+
+  let paths;
+  if (process.platform === 'win32') {
+    // Windows paths, organized by architecture
+    paths = [
+      // 64-bit: Chrome, Chromium, Opera, Opera GX, Brave, and Edge
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files\\Chromium\\Application\\chrome.exe',
+      'C:\\Program Files\\Opera\\launcher.exe',
+      'C:\\Program Files\\Opera GX\\launcher.exe',
+      'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+      // 32-bit: Chrome, Chromium, Opera, Opera GX, Brave, and Edge
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Chromium\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Opera\\launcher.exe',
+      'C:\\Program Files (x86)\\Opera GX\\launcher.exe',
+      'C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    ];
+  } else if (process.platform === 'darwin') {
+    // macOS paths for Chrome, Chromium, Opera, Opera GX, Brave, and Edge
+    paths = [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+      '/Applications/Opera.app/Contents/MacOS/Opera',
+      '/Applications/Opera GX.app/Contents/MacOS/Opera GX',
+      '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    ];
+  } else if (process.platform === 'linux') {
+    // Linux-compatible browser paths, organized by distribution method
+    paths = [
+      // APT package manager installations: Chrome, Chromium, Opera, and Brave
+      '/usr/bin/google-chrome',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/opera',
+      '/usr/bin/brave-browser',
+      // Snap package manager installations: Chromium and Brave
+      '/snap/bin/chromium',
+      '/snap/bin/brave',
+      // Flatpak package manager installations: Chromium, Opera, and Brave
+      '/var/lib/flatpak/exports/bin/org.chromium.Chromium',
+      '/var/lib/flatpak/exports/bin/com.opera.Browser',
+      '/var/lib/flatpak/exports/bin/com.brave.Browser',
+    ];
+  } 
+
   const foundPath = paths.find(path => fs.existsSync(path));
+  // Defines the path to the browser executable, if found
   if (!foundPath) {
-    const platform = process.platform === 'win32' ? 'Windows' : 'Linux';
-    console.warn(`⚠️ No Chrome/Chromium executable found on ${platform}. Please install Chrome, Chromium, or Edge`);
+    // Defining friendly names for Windows and macOS
+    const platform = process.platform === 'win32' ? 'Windows' 
+    : process.platform === 'darwin' ? 'macOS' 
+    : 'Linux';
+    // OS-specific error message + download links, if no compatible browser is found
+    const browserLinks = {
+      'Windows': `
+Chrome: https://www.google.com/chrome/
+Chromium: https://www.chromium.org/getting-involved/download-chromium
+Brave: https://brave.com/download/windows
+Opera: https://www.opera.com/computer
+Opera GX: https://www.opera.com/gx
+Edge: https://www.microsoft.com/edge`,
+
+      'macOS': `
+Chrome: https://www.google.com/chrome/
+Chromium: https://www.chromium.org/getting-involved/download-chromium
+Brave: https://brave.com/download/macos
+Opera: https://www.opera.com/computer
+Opera GX: https://www.opera.com/gx
+Edge: https://www.microsoft.com/edge`,
+
+      'Linux': `
+Chrome: https://www.google.com/chrome/
+Brave: https://brave.com/download/
+Opera: https://www.opera.com/download
+
+Or install via package manager:
+Chrome (Ubuntu/Debian): sudo apt install google-chrome-stable
+Chromium (Ubuntu/Debian): sudo apt install chromium-browser
+Brave (Ubuntu/Debian): sudo apt install brave-browser
+Opera (Ubuntu/Debian): sudo apt install opera-stable
+
+Chromium (Snap): sudo snap install chromium
+Brave (Snap): sudo snap install brave
+
+Chromium (Flatpak): flatpak install org.chromium.Chromium
+Brave (Flatpak): flatpak install com.brave.Browser
+Opera (Flatpak): flatpak install com.opera.Browser`
+    };
+    
+    console.warn(`⚠️ No compatible browser found on ${platform}.
+      \nPlease install one of these browsers:
+      \n${browserLinks[platform]}`);
   }
   return foundPath;
 };
@@ -628,54 +714,7 @@ class FundraisingScanner {
     }
   }
 
-  async shortenUrl(url) {
-    try {
-      this.logger.debug(`    ├─ Calling shortener API...`);
-      
-      const options = {
-        method: 'POST',
-        url: 'https://gazafund.me/api/v1/links',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'insomnia/2023.5.8',
-          'Accept': 'application/json',
-          'Authorization': `Bearer ${process.env.SHORTENER_BEARER_TOKEN}`
-        },
-        data: new URLSearchParams({
-          url: url,
-          domain_id: '3',
-          privacy: '1',
-          urls: '',
-          multiple_links: '0',
-          alias: '',
-          space_id: ''
-        }).toString()
-      };
 
-      const response = await fetch(url, options);
-
-      // Accept both 200 and 201 as valid response codes
-      if ((response.status === 200 || response.status === 201) && response.data?.data) {
-        const shortUrl = response.data.data.short_url || response.data.data.shortUrl;
-        if (shortUrl) {
-          this.logger.debug(`    └─✨ Created ${shortUrl} (-${url.length - shortUrl.length} chars)`);
-          return shortUrl;
-        }
-      }
-      
-      this.logger.warn(`    └─⚠️ No short URL in response`, {
-        status: response.status,
-        data: JSON.stringify(response.data, null, 2)
-      });
-      return null;
-
-    } catch (error) {
-      this.logger.warn(`    └─❌ API error: ${error.message}`, {
-        error: error.response?.data || error.message
-      });
-      return null;
-    }
-  }
 
   async updateCampaignData(id, target, raised, name, currency, donations) {
     const maxRetries = 3;
@@ -683,21 +722,6 @@ class FundraisingScanner {
     
     while (attempt < maxRetries) {
       try {
-        // Check for existing short URL
-        const { data: existing } = await this.supabase
-          .from(this.config.tableName)
-          .select('short, link')
-          .eq('id', id)
-          .single();
-
-        let shortUrl = existing?.short;
-        if (!shortUrl && existing?.link) {
-          this.logger.debug(`  ├─🔗 No cached short URL found`);
-          shortUrl = await this.shortenUrl(existing.link);
-        } else if (shortUrl) {
-          this.logger.debug(`  ├─♻️ Using cached: ${shortUrl}`);
-        }
-
         this.logger.debug(`  ├─💾 Saving to database...`);
         const { error } = await this.supabase
           .from(this.config.tableName)
@@ -706,7 +730,6 @@ class FundraisingScanner {
             raised: parseInt(raised) || null,
             title: name || null,
             currency: currency || null,
-            short: shortUrl,
             donations: parseInt(donations) || null,
             updated_at: new Date().toISOString()
           })
@@ -714,7 +737,7 @@ class FundraisingScanner {
 
         if (error) throw error;
 
-        this.logger.debug(`  └─✅ Updated${shortUrl ? ` with ${shortUrl}` : ''}`);
+        this.logger.debug(`  └─✅ Updated`);
         return true;
         
       } catch (error) {
@@ -1238,25 +1261,60 @@ class FundraisingScanner {
   }
 
   generateFailedScansReport() {
-    if (this.failedScans.items.length === 0) return '';
+    const hasFailedScans = this.failedScans.items.length > 0;
+    const has404s = this.metrics.notFoundLinks.length > 0;
+    
+    if (!hasFailedScans && !has404s) return '';
     
     const report = [
       '\n Failed Scans Report',
       '='.repeat(50),
       `Total Failed: ${this.failedScans.items.length}`,
+      `Total 404s: ${this.metrics.notFoundLinks.length}`,
+      `Combined Total: ${this.failedScans.items.length + this.metrics.notFoundLinks.length}`,
       '\nDetailed Breakdown:',
-      ...this.failedScans.items.map(item => (
-        `- ID: ${item.id}\n  URL: ${item.url}\n  Reason: ${item.reason}\n  Time: ${item.timestamp}`
-      )),
-      '='.repeat(50),
-    ].join('\n');
+    ];
+    
+    // Add regular failed scans
+    if (hasFailedScans) {
+      report.push('\n--- Failed Scans ---');
+      this.failedScans.items.forEach(item => {
+        report.push(`- ID: ${item.id}\n  URL: ${item.url}\n  Reason: ${item.reason}\n  Time: ${item.timestamp}`);
+      });
+    }
+    
+    // Add 404s
+    if (has404s) {
+      report.push('\n--- 404 Not Found ---');
+      this.metrics.notFoundLinks.forEach(link => {
+        const title = link.title || `Campaign ${link.id}`;
+        report.push(`- ID: ${link.id}\n  URL: ${link.url}\n  Title: ${title}\n  Reason: Campaign no longer exists (404)\n  Time: ${new Date().toISOString()}`);
+      });
+    }
+    
+    report.push('='.repeat(50));
+    
+    const fullReport = report.join('\n');
     
     try {
       const fileName = `failed_scans_${new Date().toISOString().split('T')[0]}.txt`;
-      fs.writeFileSync(fileName, report);
-      return `${report}\n\nReport saved to: ${fileName}`;
+      const timestamp = new Date().toISOString();
+      
+      // Check if file already exists to determine if we should append
+      const fileExists = fs.existsSync(fileName);
+      
+      if (fileExists) {
+        // Append to existing file with a separator
+        const separator = `\n\n${'='.repeat(50)}\nSCAN SESSION: ${timestamp}\n${'='.repeat(50)}\n`;
+        fs.appendFileSync(fileName, separator + fullReport);
+        return `${fullReport}\n\nReport appended to: ${fileName}`;
+      } else {
+        // Create new file
+        fs.writeFileSync(fileName, fullReport);
+        return `${fullReport}\n\nReport saved to: ${fileName}`;
+      }
     } catch (error) {
-      return `${report}\n\nFailed to save report: ${error.message}`;
+      return `${fullReport}\n\nFailed to save report: ${error.message}`;
     }
   }
 
@@ -1285,7 +1343,7 @@ class FundraisingScanner {
         });
     }
     
-    if (this.failedScans.items.length > 0) {
+    if (this.failedScans.items.length > 0 || this.metrics.notFoundLinks.length > 0) {
         console.log(this.generateFailedScansReport());
     }
     
