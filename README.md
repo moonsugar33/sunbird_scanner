@@ -1,6 +1,6 @@
 # Sunbird Scanner
 
-## What does this do?
+## What This Project Does
 
 Sunbird Scanner is a custom built tool to scrape GoFundMe campaigns using [Puppeteer](https://pptr.dev/). 
 It then reports campaign stats to a [Supabase](https://supabase.com/) table.
@@ -12,26 +12,53 @@ It then reports campaign stats to a [Supabase](https://supabase.com/) table.
 - Cross-platform
 - Supports both Chuffed and GoFundMe
 
-
 ## Getting Started
 
 This guide will walk you through the steps needed to set up the project. No prior experience is necessary - just follow the instructions below.
 
----
+## Project Structure
 
-### Prerequisites
+```
+sunbird_scanner/
+├── scanner.js              # Main web scraping tool
+├── run.js                  # Interactive menu system
+├── backup.js               # Database backup system
+├── tools/
+│   ├── internet_archiver/  # Saves pages to Internet Archive
+│   └── data_validator/     # Syncs data between sources
+├── run.bat                 # Windows batch file for easy access
+└── .env                    # Your configuration (keep secret!)
+```
 
-You'll need the following installed on your computer:
+## Core Tools
 
-- **Git**: A tool to clone and manage the project code.
-- **Bun**: A platform for running JavaScript code.
-- **Supabase Account**: A backend-as-a-service platform where you'll set up your database.
+### 1. Main Scanner (`scanner.js`)
+**Purpose**: Scrapes fundraising campaigns for current data
+- **What it does**: Visits campaign pages, extracts amounts, goals, supporter counts
+- **When to use**: Daily scanning of active campaigns
+- **Output**: Updates your Supabase database with current campaign status
+
+### 2. Internet Archiver (`tools/internet_archiver/`)
+**Purpose**: Preserves campaign pages permanently
+- **What it does**: Saves campaign pages to Internet Archive before they disappear
+- **When to use**: After adding new campaigns; before campaigns go offline
+- **Output**: Archive URLs stored in your database for backup access
+
+### 3. Data Validator (`tools/data_validator/`)
+**Purpose**: Keeps your data synchronized with trusted sources
+- **What it does**: Compares data with your database, finds mismatches
+- **When to use**: Daily to catch new campaigns and changes
+- **Output**: Report of what needs attention in your database
+
+### 4. Backup System (`backup.js`)
+**Purpose**: Protects your data from loss
+- **What it does**: Creates regular backups of your Supabase database
+- **When to use**: Automatically runs, or manually when needed
+- **Output**: Secure backups stored in the cloud
 
 ---
 
 ### Step 1: Install Git
-
-Git is a tool that helps you download and manage the project code.
 
 1. Visit [git-scm.com](https://git-scm.com/).
 2. Download the version for your operating system.
@@ -127,8 +154,6 @@ Supabase is a service that provides a database and API for your project.
 5. Paste these two values into your terminal when requested. ``run.js`` will ask for them automatically.
 
 ---
-
-### You're Ready to Go!
 
 Now, you have everything set up. Run your project using:
 ```bash
